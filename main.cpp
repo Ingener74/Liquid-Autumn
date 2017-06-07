@@ -495,18 +495,18 @@ public:
         return this;
     }
 
-    const std::string &getDirectory() const {
+    const std::string& getDirectory() const {
         return _filesDirectory;
     }
 
-    WebServer *addRequest(const std::string &requestString, RequestHandler *handler) {
-        handler->setWebServer(this);
-        _requestHandlers.insert(std::make_pair(requestString, handler));
-        return this;
-    }
+	WebServer* addRequest(const std::string& requestString, RequestHandler* handler) {
+		handler->setWebServer(this);
+		_requestHandlers.insert(std::make_pair(requestString, handler));
+		return this;
+	}
 
-    bool handle(const std::vector<char> &data, size_t bytesReceived, ServerSocket *socket,
-                const ServerSocket::Connection &conn) {
+	bool handle(const std::vector<char>& data, size_t bytesReceived, ServerSocket* socket,
+				const ServerSocket::Connection& conn) {
 
         if (data.empty())
             return false;
@@ -521,8 +521,8 @@ public:
 
 		printf("request: %s\n", request.c_str());
 
-        if(checkAndResponseFile(request, socket, conn))
-            return true;
+		if (checkAndResponseFile(request, socket, conn))
+			return true;
 
         RequestMap::iterator it = _requestHandlers.find(request);
         if (it == _requestHandlers.end())
@@ -652,6 +652,7 @@ int main() {
             ->addRequest("/", new WebServer::FileHandler("index.html"))
 			->addRequest("/test_json", new WebServer::JsonHandler("{\"test\": 42}"))
             ->addRequest("/quit", new WebServer::FunctionHandler(stopProgramRequest))
+		  	->addRequest("/update_log", new WebServer::JsonHandler("{\"log\": \"Log text\"}"))
         );
 
         pthread_mutex_lock(&mutex);

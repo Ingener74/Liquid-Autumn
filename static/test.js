@@ -9,3 +9,10 @@ $("#selectGame1Btn").click(function () {
         $("#selectGame1Result").html("Result: " + data.test);
     })
 });
+
+setInterval(function () {
+    $.get("update_log", function (data, status) {
+        $("#log").html(data.log)
+    })
+
+}, 1000);
