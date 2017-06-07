@@ -18,32 +18,32 @@
 
 template<typename T>
 class Ptr {
-    T *t;
+	T *t;
 
 public:
-    Ptr(T *t = 0) :
-            t(t) {
-    }
+	Ptr(T *t = 0) :
+			t(t) {
+	}
 
-    ~Ptr() {
-        if (t)
-            delete t;
-    }
+	~Ptr() {
+		if (t)
+			delete t;
+	}
 
-    T *operator->() {
-        return t ? t : throw std::runtime_error("pointer is null");
-    }
+	T *operator->() {
+		return t ? t : throw std::runtime_error("pointer is null");
+	}
 
-    Ptr(const Ptr &other) {
-        *this = other;
-    }
+	Ptr(const Ptr& other) {
+		*this = other;
+	}
 
-    Ptr &operator=(const Ptr &other) {
-        if (this != &other) {
-            std::swap(t, const_cast<Ptr &>(other).t); // TODO const_cast bad
-        }
-        return *this;
-    }
+	Ptr& operator=(const Ptr& other) {
+		if (this != &other) {
+			std::swap(t, const_cast<Ptr&>(other).t); // TODO const_cast bad
+		}
+		return *this;
+	}
 };
 
 class ServerSocket {
@@ -63,26 +63,26 @@ public:
 
     typedef std::vector<Connection> Connections;
 
-    class Handler {
-    public:
-        virtual ~Handler() {
-        }
+	class Handler {
+	public:
+		virtual ~Handler() {
+		}
 
-        virtual bool handle(const std::vector<char> &data, size_t bytesReceived, ServerSocket *socket,
-                            const Connection &conn) = 0;
-    };
+		virtual bool handle(const std::vector<char> &data, size_t bytesReceived, ServerSocket *socket,
+							const Connection &conn) = 0;
+	};
 
-    ServerSocket(uint16_t port = 8080) :
-            _port(port) {
-        pthread_create(&_thread, NULL, threadBody, this);
-    }
+	ServerSocket(uint16_t port = 8080) :
+			_port(port) {
+		pthread_create(&_thread, NULL, threadBody, this);
+	}
 
-    ~ServerSocket() {
-        shutdown();
-        printf("before join\n");
-        pthread_join(_thread, NULL);
-        printf("after join\n");
-    }
+	~ServerSocket() {
+		shutdown();
+		printf("before join\n");
+		pthread_join(_thread, NULL);
+		printf("after join\n");
+	}
 
     static void *threadBody(void *userData) {
         ServerSocket *self = static_cast<ServerSocket *>(userData);
@@ -92,8 +92,6 @@ public:
             printf("create socket error: %s\n", strerror(errno));
             return NULL;
         }
-
-        printf("sock %d\n", sock);
 
         sockaddr_in address;
         memset(&address, 0, sizeof(address));
@@ -124,20 +122,13 @@ public:
 
         Connections connections;
 
-        int nfds = sock;
         fd_set read_fds;
         fd_set write_fds;
-
-        FD_ZERO(&read_fds);
-        FD_ZERO(&write_fds);
 
         if (pipe(self->_pfds) < 0) {
             printf("can't create pipes: %s\n", strerror(errno));
             return NULL;
         }
-
-        FD_SET(self->_pfds[0], &read_fds); // self-pipe trick
-        nfds = std::max(nfds, self->_pfds[0] + 1);
 
         int flags = 0;
         flags = fcntl(self->_pfds[0], F_GETFL);
@@ -162,20 +153,29 @@ public:
             return NULL;
         }
 
-        printf("pipe %d\n", self->_pfds[0]);
-        printf("pipe %d\n", self->_pfds[1]);
-
-        FD_SET(sock, &read_fds);
-        nfds = std::max(nfds, sock);
-
         bool work = true;
 
-        printf("nfds %d\n", nfds);
-
         while (work) {
+
+			int nfds = 0;
+			FD_ZERO(&read_fds);
+			FD_ZERO(&write_fds);
+
+			FD_SET(self->_pfds[0], &read_fds); // self-pipe trick
+			nfds = std::max(nfds, self->_pfds[0]);
+
+			FD_SET(sock, &read_fds);
+			nfds = std::max(nfds, sock);
+
+			for (size_t j = 0; j < connections.size(); ++j)
+			{
+				int fd = connections.at(j)._fd;
+				FD_SET(fd, &read_fds);
+				nfds = std::max(nfds, fd);
+			}
+
             int selectResult = select(nfds + 1, &read_fds, NULL, NULL, NULL);
             if (selectResult > 0) {
-                printf("select result %d\n", selectResult);
                 for (int i = 0; i <= nfds; ++i) {
                     if (FD_ISSET(i, &read_fds)) {
                         if (i == self->_pfds[0]) {
@@ -209,9 +209,8 @@ public:
                             ssize_t bytesReceived = recv(connection, buffer.data(), buffer.size(), 0);
 
                             if (bytesReceived == 0) {
-                                printf("error: recv return %zi\n", bytesReceived);
-
                                 FD_CLR(it->_fd, &read_fds);
+								::shutdown(it->_fd, SHUT_RDWR);
                                 close(it->_fd);
                                 connections.erase(it);
 
@@ -263,9 +262,10 @@ public:
             char *ptr = const_cast<char *>(data) + summaryBytesSended;
             size_t balance = size - summaryBytesSended;
 
-            ssize_t bytesSended = send(conn._fd, ptr, balance, 0);
+            ssize_t bytesSended = send(conn._fd, ptr, balance, MSG_NOSIGNAL);
 
-            printf("send %zi of %zi bytes to %d connection\n", size, bytesSended, conn._fd);
+//            printf("send %zi of %zi bytes to %d connection\n", size, bytesSended, conn._fd);
+//            printf("data %s\n", data);
 
             summaryBytesSended += bytesSended;
 
@@ -409,7 +409,35 @@ public:
         }
     };
 
-    class FunctionHandler : public RequestHandler {
+	class JsonHandler : public RequestHandler {
+		std::string _page;
+	public:
+		JsonHandler(const std::string &page) :
+				_page(page) {
+		}
+
+		virtual ~JsonHandler() {
+		}
+
+		virtual std::vector<char> getResponse() {
+			const char *answer_template = "HTTP/1.1 200 OK\r\n"
+					"Server: ShnaiderServer/2017-01-01\r\n"
+					"Content-Type: application/json\r\n"
+					"Content-Length: %d\r\n"
+					"Connection: keep-alive\r\n"
+					"\r\n"
+					"%s"
+					"\r\n"
+			;
+
+			std::vector<char> answer_buffer;
+			answer_buffer.resize(strlen(answer_template) + _page.size() + 1024);
+			snprintf(answer_buffer.data(), answer_buffer.size(), answer_template, _page.size(), _page.c_str());
+			return answer_buffer;
+		}
+	};
+
+	class FunctionHandler : public RequestHandler {
     public:
         typedef std::vector<char> (*handler_t)();
 
@@ -461,8 +489,6 @@ public:
         if (data.empty())
             return false;
 
-        printf("request:\n%s\n", data.data());
-
         std::stringstream ss(data.data());
 
         std::string method;
@@ -470,6 +496,8 @@ public:
 
         ss >> method;
         ss >> request;
+
+		printf("request: %s\n", request.c_str());
 
         if(checkAndResponseFile(request, socket, conn))
             return true;
@@ -518,7 +546,7 @@ public:
             std::string mimeType = getMimeTypeForExtension(extension);
 
             response.resize(strlen(answer_template) + size + 1024);
-            snprintf(response.data(), response.size(), answer_template, mimeType.c_str(), request.c_str(), size);
+            snprintf(response.data(), response.size(), answer_template, mimeType.c_str(), /*request.c_str(), */size);
 
             char *ptr = response.data() + strlen(response.data());
 
@@ -537,8 +565,9 @@ public:
             return socket->sendData(response, conn);
 
         } else {
-            response.resize(strlen(answer_template) + 1024);
-            snprintf(response.data(), response.size(), answer_template, request.c_str(), 0);
+//            response.resize(strlen(answer_template) + 1024);
+//            snprintf(response.data(), response.size(), answer_template, request.c_str(), 0);
+			return false;
         }
 
         return true;
@@ -607,6 +636,7 @@ int main() {
             "        </ul>"
             "    </body>"
             "</html>")))
+			->addRequest("/test_json", new WebServer::JsonHandler("{\"test\": 42}"))
             ->addRequest("/quit", new WebServer::FunctionHandler(stopProgramRequest))
         );
 
