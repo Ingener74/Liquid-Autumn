@@ -1,15 +1,11 @@
-function onButtonClick() {
-    console.log("on button click");
-    $.get("test_json", function (data, status) {
-        console.log("on button click and get response");
-        console.log(data.test);
+$("#quitBtn").click(function () {
+    $.get("quit", function (data) {
     })
-}
-
-$("#select_game_1").click(function () {
-    alert("on select game 1");
 });
 
-function onGameSelect1Click() {
-    alert("on select game 1");
-}
+$("#selectGame1Btn").click(function () {
+    $.get("test_json", function (data, status) {
+        console.log("answer " + data.test);
+        $("#selectGame1Result").html("Result: " + data.test);
+    })
+});

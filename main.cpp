@@ -156,7 +156,6 @@ public:
         bool work = true;
 
         while (work) {
-
 			int nfds = 0;
 			FD_ZERO(&read_fds);
 			FD_ZERO(&write_fds);
@@ -175,64 +174,66 @@ public:
 			}
 
             int selectResult = select(nfds + 1, &read_fds, NULL, NULL, NULL);
-            if (selectResult > 0) {
-                for (int i = 0; i <= nfds; ++i) {
-                    if (FD_ISSET(i, &read_fds)) {
-                        if (i == self->_pfds[0]) {
-                            printf("quit\n");
-                            work = false;
-                            break;
-                        }
 
-                        if (i == sock) {
-                            printf("new connection\n");
+			if(selectResult <= 0)
+				continue;
 
-                            int fd = accept(sock, NULL, NULL);
-                            connections.push_back(Connection(fd));
+			for (int i = 0; i <= nfds; ++i) {
+				if (FD_ISSET(i, &read_fds)) {
+					if (i == self->_pfds[0]) {
+						printf("quit\n");
+						work = false;
+						break;
+					}
 
-                            nfds = std::max(nfds, fd);
+					if (i == sock) {
+						printf("new connection\n");
 
-                            FD_SET(fd, &read_fds);
+						int fd = accept(sock, NULL, NULL);
+						connections.push_back(Connection(fd));
 
-                            continue;
-                        }
+						nfds = std::max(nfds, fd);
 
-                        Connections::iterator it = std::find(connections.begin(), connections.end(), i);
-                        if (it != connections.end()) {
-                            size_t buffer_size = 4096;
+						FD_SET(fd, &read_fds);
 
-                            std::vector<char> buffer;
-                            buffer.resize(buffer_size);
+						continue;
+					}
 
-                            int connection = (*it)._fd;
+					Connections::iterator it = std::find(connections.begin(), connections.end(), i);
+					if (it != connections.end()) {
+						size_t buffer_size = 4096;
 
-                            ssize_t bytesReceived = recv(connection, buffer.data(), buffer.size(), 0);
+						std::vector<char> buffer;
+						buffer.resize(buffer_size);
 
-                            if (bytesReceived == 0) {
-                                FD_CLR(it->_fd, &read_fds);
-								::shutdown(it->_fd, SHUT_RDWR);
-                                close(it->_fd);
-                                connections.erase(it);
+						int connection = (*it)._fd;
 
-                            } else if (bytesReceived < buffer_size) {
-                                bool handleResult = self->_handler->handle(buffer, static_cast<size_t>(bytesReceived),
-                                                                           self, connection);
-                                if (!handleResult) {
-                                    printf("warning: can't handle result\n");
-                                }
-                            } else if (bytesReceived == buffer_size) {
-                                printf("warning: receive buffer overflow\n");
-                            }
-                        }
-                    } else if (FD_ISSET(i, &write_fds)) {
-                        Connections::iterator it = std::find(connections.begin(), connections.end(), i);
-                        if (it != connections.end()) {
-                            printf("ready to write\n");
-                        }
-                    }
-                }
-            }
-        }
+						ssize_t bytesReceived = recv(connection, buffer.data(), buffer.size(), 0);
+
+						if (bytesReceived == 0) {
+							FD_CLR(it->_fd, &read_fds);
+							::shutdown(it->_fd, SHUT_RDWR);
+							close(it->_fd);
+							connections.erase(it);
+
+						} else if (bytesReceived < buffer_size) {
+							bool handleResult = self->_handler->handle(buffer, static_cast<size_t>(bytesReceived),
+																	   self, connection);
+							if (!handleResult) {
+								printf("warning: can't handle result\n");
+							}
+						} else if (bytesReceived == buffer_size) {
+							printf("warning: receive buffer overflow\n");
+						}
+					}
+				} else if (FD_ISSET(i, &write_fds)) {
+					Connections::iterator it = std::find(connections.begin(), connections.end(), i);
+					if (it != connections.end()) {
+						printf("ready to write\n");
+					}
+				}
+			}
+		}
 
         for (size_t i = 0; i < connections.size(); ++i) {
             close(connections.at(i)._fd);
@@ -303,6 +304,15 @@ public:
 
     typedef void (WebServer::*request_handler_m)(const std::string &requestString);
 
+	class Response{
+	public:
+		Response(const std::vector<char>& data = std::vector<char>(), bool valid = false) : data(data), valid(valid)
+		{}
+
+		std::vector<char> data;
+		bool valid;
+	};
+
     class RequestHandler {
     public:
         RequestHandler() :
@@ -312,7 +322,7 @@ public:
         virtual ~RequestHandler() {
         }
 
-        virtual std::vector<char> getResponse() = 0;
+        virtual Response getResponse() = 0;
 
         WebServer *getWebServer() {
             return _webServer;
@@ -340,27 +350,37 @@ public:
         virtual ~FileHandler() {
         }
 
-        virtual std::vector<char> getResponse() {
-            const char *answer_template =
-                    "HTTP/1.1 200 OK\r\n"
-                    "Server: ShnaiderServer/2017-01-01\r\n"
-                    "Content-Type: image/*\r\n"
-                    "Content-Disposition: attachment; filename=%s\r\n"
-                    "Content-Length: %d\r\n"
-                    "Connection: keep-alive\r\n"
-                    "\r\n";
+        virtual Response getResponse() {
+			const char *answer_template =
+					"HTTP/1.1 200 OK\r\n"
+					"Server: ShnaiderServer/2017-01-01\r\n"
+					"Content-Type: %s\r\n"
+					"Content-Length: %d\r\n"
+					"Connection: keep-alive\r\n"
+					"\r\n";
 
-            std::vector<char> response;
+			std::vector<char> response;
 
-            FILE *file = fopen((_webServer->getDirectory() + "/" + _fileName).c_str(), "rb");
+			std::string filename = _webServer->getDirectory() + "/" + _fileName;
+
+			struct stat path;
+			stat(filename.c_str(), &path);
+			if (!S_ISREG(path.st_mode)) {
+				return Response();
+			}
+
+			FILE *file = fopen(filename.c_str(), "rb");
 
             if (file) {
-                fseek(file, 0, SEEK_END);
-                long size = ftell(file);
-                rewind(file);
+				fseek(file, 0, SEEK_END);
+				long size = ftell(file);
+				rewind(file);
 
-                response.resize(strlen(answer_template) + size + 1024);
-                snprintf(response.data(), response.size(), answer_template, _fileName.c_str(), size);
+				std::string extension = _webServer->getExtension(_fileName);
+				std::string mimeType = _webServer->getMimeTypeForExtension(extension);
+
+				response.resize(strlen(answer_template) + size + 1024);
+				snprintf(response.data(), response.size(), answer_template, mimeType.c_str(), size);
 
                 char *ptr = response.data() + strlen(response.data());
 
@@ -373,11 +393,13 @@ public:
                 if (bytesRead != size) {
                     printf("warning: read size not match\n");
                 }
+
+				fclose(file);
+
+				return Response(response, true);
             } else {
-                response.resize(strlen(answer_template) + 1024);
-                snprintf(response.data(), response.size(), answer_template, _fileName.c_str(), 0);
+                return Response();
             }
-            return response;
         }
     };
 
@@ -391,7 +413,7 @@ public:
         virtual ~PageHandler() {
         }
 
-        virtual std::vector<char> getResponse() {
+        virtual Response getResponse() {
             const char *answer_template = "HTTP/1.1 200 OK\r\n"
                     "Server: ShnaiderServer/2017-01-01\r\n"
                     "Content-Type: text/html\r\n"
@@ -419,7 +441,7 @@ public:
 		virtual ~JsonHandler() {
 		}
 
-		virtual std::vector<char> getResponse() {
+		virtual Response getResponse() {
 			const char *answer_template = "HTTP/1.1 200 OK\r\n"
 					"Server: ShnaiderServer/2017-01-01\r\n"
 					"Content-Type: application/json\r\n"
@@ -433,13 +455,13 @@ public:
 			std::vector<char> answer_buffer;
 			answer_buffer.resize(strlen(answer_template) + _page.size() + 1024);
 			snprintf(answer_buffer.data(), answer_buffer.size(), answer_template, _page.size(), _page.c_str());
-			return answer_buffer;
+			return Response(answer_buffer, true);
 		}
 	};
 
 	class FunctionHandler : public RequestHandler {
     public:
-        typedef std::vector<char> (*handler_t)();
+        typedef Response (*handler_t)();
 
         FunctionHandler(handler_t handler = 0) :
                 _handler(handler) {
@@ -448,8 +470,8 @@ public:
         virtual ~FunctionHandler() {
         }
 
-        virtual std::vector<char> getResponse() {
-            return _handler ? _handler() : std::vector<char>();
+        virtual Response getResponse() {
+            return _handler ? _handler() : Response();
         }
 
     private:
@@ -506,16 +528,16 @@ public:
         if (it == _requestHandlers.end())
             return false;
 
-        std::vector<char> response = it->second->getResponse();
+        Response response = it->second->getResponse();
 
-        return socket->sendData(response, conn);
+        return socket->sendData(response.data, conn);
     }
 
     bool checkAndResponseFile(const std::string &request, ServerSocket *socket,
-                              const ServerSocket::Connection &conn) const {
+                              const ServerSocket::Connection &conn) {
         if (getDirectory().empty())
             return false;
-
+/*
         // "Content-Disposition: attachment; filename=%s\r\n"
         const char *answer_template =
             "HTTP/1.1 200 OK\r\n"
@@ -546,7 +568,7 @@ public:
             std::string mimeType = getMimeTypeForExtension(extension);
 
             response.resize(strlen(answer_template) + size + 1024);
-            snprintf(response.data(), response.size(), answer_template, mimeType.c_str(), /*request.c_str(), */size);
+            snprintf(response.data(), response.size(), answer_template, mimeType.c_str(), size);
 
             char *ptr = response.data() + strlen(response.data());
 
@@ -565,12 +587,16 @@ public:
             return socket->sendData(response, conn);
 
         } else {
-//            response.resize(strlen(answer_template) + 1024);
-//            snprintf(response.data(), response.size(), answer_template, request.c_str(), 0);
 			return false;
         }
+*/
 
-        return true;
+		FileHandler fileHandler(request);
+		fileHandler.setWebServer(this);
+		Response response = fileHandler.getResponse();
+		if (response.valid){
+			socket->sendData(response.data, conn);
+		}
     }
 
     std::string getMimeTypeForExtension(const std::string &extension) const {
@@ -608,10 +634,10 @@ void signal_handler(int) {
     pthread_mutex_unlock(&mutex);
 }
 
-std::vector<char> stopProgramRequest() {
+WebServer::Response stopProgramRequest() {
     programWork = false;
     signal_handler(0);
-    return std::vector<char>();
+    return WebServer::Response();
 }
 
 int main() {
@@ -623,19 +649,7 @@ int main() {
 
         Ptr<WebServer> ws((new WebServer(9001))
             ->setDirectory("static")
-            ->addRequest("/", new WebServer::PageHandler(std::string(""
-            "<!DOCTYPE html>"
-            "<html>"
-            "    <head>"
-            "        <title>Debug Web Server Page</title>"
-            "        <meta charset=\"utf-8\">"
-            "    </head>"
-            "    <body>"
-            "        <ul>"
-            "            <li>counter = 0</li>"
-            "        </ul>"
-            "    </body>"
-            "</html>")))
+            ->addRequest("/", new WebServer::FileHandler("index.html"))
 			->addRequest("/test_json", new WebServer::JsonHandler("{\"test\": 42}"))
             ->addRequest("/quit", new WebServer::FunctionHandler(stopProgramRequest))
         );
