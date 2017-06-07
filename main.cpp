@@ -18,32 +18,32 @@
 
 template<typename T>
 class Ptr {
-	T *t;
+    T* t;
 
 public:
-	Ptr(T *t = 0) :
-			t(t) {
-	}
+    Ptr(T* t = 0) :
+            t(t) {
+    }
 
-	~Ptr() {
-		if (t)
-			delete t;
-	}
+    ~Ptr() {
+        if (t)
+            delete t;
+    }
 
-	T *operator->() {
-		return t ? t : throw std::runtime_error("pointer is null");
-	}
+    T* operator->() {
+        return t ? t : throw std::runtime_error("pointer is null");
+    }
 
-	Ptr(const Ptr& other) {
-		*this = other;
-	}
+    Ptr(const Ptr& other) {
+        *this = other;
+    }
 
-	Ptr& operator=(const Ptr& other) {
-		if (this != &other) {
-			std::swap(t, const_cast<Ptr&>(other).t); // TODO const_cast bad
-		}
-		return *this;
-	}
+    Ptr& operator=(const Ptr& other) {
+        if (this != &other) {
+            std::swap(t, const_cast<Ptr&>(other).t); // TODO const_cast bad
+        }
+        return *this;
+    }
 };
 
 class ServerSocket {
@@ -63,26 +63,26 @@ public:
 
     typedef std::vector<Connection> Connections;
 
-	class Handler {
-	public:
-		virtual ~Handler() {
-		}
+    class Handler {
+    public:
+        virtual ~Handler() {
+        }
 
-		virtual bool handle(const std::vector<char> &data, size_t bytesReceived, ServerSocket *socket,
-							const Connection &conn) = 0;
-	};
+        virtual bool handle(const std::vector<char> &data, size_t bytesReceived, ServerSocket *socket,
+                            const Connection &conn) = 0;
+    };
 
-	ServerSocket(uint16_t port = 8080) :
-			_port(port) {
-		pthread_create(&_thread, NULL, threadBody, this);
-	}
+    ServerSocket(uint16_t port = 8080) :
+            _port(port) {
+        pthread_create(&_thread, NULL, threadBody, this);
+    }
 
-	~ServerSocket() {
-		shutdown();
-		printf("before join\n");
-		pthread_join(_thread, NULL);
-		printf("after join\n");
-	}
+    ~ServerSocket() {
+        shutdown();
+        printf("before join\n");
+        pthread_join(_thread, NULL);
+        printf("after join\n");
+    }
 
     static void *threadBody(void *userData) {
         ServerSocket *self = static_cast<ServerSocket *>(userData);
@@ -110,6 +110,9 @@ public:
                 continue;
             } else {
                 printf("bind socket success: %d\n", port);
+
+                printf("http://127.0.0.1:%d\n", port);
+
                 break;
             }
         }
@@ -156,84 +159,83 @@ public:
         bool work = true;
 
         while (work) {
-			int nfds = 0;
-			FD_ZERO(&read_fds);
-			FD_ZERO(&write_fds);
+            int nfds = 0;
+            FD_ZERO(&read_fds);
+            FD_ZERO(&write_fds);
 
-			FD_SET(self->_pfds[0], &read_fds); // self-pipe trick
-			nfds = std::max(nfds, self->_pfds[0]);
+            FD_SET(self->_pfds[0], &read_fds); // self-pipe trick
+            nfds = std::max(nfds, self->_pfds[0]);
 
-			FD_SET(sock, &read_fds);
-			nfds = std::max(nfds, sock);
+            FD_SET(sock, &read_fds);
+            nfds = std::max(nfds, sock);
 
-			for (size_t j = 0; j < connections.size(); ++j)
-			{
-				int fd = connections.at(j)._fd;
-				FD_SET(fd, &read_fds);
-				nfds = std::max(nfds, fd);
-			}
+            for (size_t j = 0; j < connections.size(); ++j) {
+                int fd = connections.at(j)._fd;
+                FD_SET(fd, &read_fds);
+                nfds = std::max(nfds, fd);
+            }
 
             int selectResult = select(nfds + 1, &read_fds, NULL, NULL, NULL);
 
-			if(selectResult <= 0)
-				continue;
+            if (selectResult <= 0)
+                continue;
 
-			for (int i = 0; i <= nfds; ++i) {
-				if (FD_ISSET(i, &read_fds)) {
-					if (i == self->_pfds[0]) {
-						printf("quit\n");
-						work = false;
-						break;
-					}
+            for (int i = 0; i <= nfds; ++i) {
+                if (FD_ISSET(i, &read_fds)) {
+                    if (i == self->_pfds[0]) {
+                        printf("quit\n");
+                        work = false;
+                        break;
+                    }
 
-					if (i == sock) {
-						printf("new connection\n");
+                    if (i == sock) {
+                        printf("new connection\n");
 
-						int fd = accept(sock, NULL, NULL);
-						connections.push_back(Connection(fd));
+                        int fd = accept(sock, NULL, NULL);
+                        connections.push_back(Connection(fd));
 
-						nfds = std::max(nfds, fd);
+                        nfds = std::max(nfds, fd);
 
-						FD_SET(fd, &read_fds);
+                        FD_SET(fd, &read_fds);
 
-						continue;
-					}
+                        continue;
+                    }
 
-					Connections::iterator it = std::find(connections.begin(), connections.end(), i);
-					if (it != connections.end()) {
-						size_t buffer_size = 4096;
+                    Connections::iterator it = std::find(connections.begin(), connections.end(), i);
+                    if (it != connections.end()) {
+                        size_t buffer_size = 4096;
 
-						std::vector<char> buffer;
-						buffer.resize(buffer_size);
+                        std::vector<char> buffer;
+                        buffer.resize(buffer_size);
 
-						int connection = (*it)._fd;
+                        int connection = (*it)._fd;
 
-						ssize_t bytesReceived = recv(connection, buffer.data(), buffer.size(), 0);
+                        ssize_t bytesReceived = recv(connection, buffer.data(), buffer.size(), 0);
 
-						if (bytesReceived == 0) {
-							FD_CLR(it->_fd, &read_fds);
-							::shutdown(it->_fd, SHUT_RDWR);
-							close(it->_fd);
-							connections.erase(it);
+                        if (bytesReceived == 0) {
+                            FD_CLR(it->_fd, &read_fds);
+                            ::shutdown(it->_fd, SHUT_RDWR);
+                            close(it->_fd);
+                            connections.erase(it);
 
-						} else if (bytesReceived < buffer_size) {
-							bool handleResult = self->_handler->handle(buffer, static_cast<size_t>(bytesReceived),
-																	   self, connection);
-							if (!handleResult) {
-								printf("warning: can't handle result\n");
-							}
-						} else if (bytesReceived == buffer_size) {
-							printf("warning: receive buffer overflow\n");
-						}
-					}
-				} else if (FD_ISSET(i, &write_fds)) {
-					Connections::iterator it = std::find(connections.begin(), connections.end(), i);
-					if (it != connections.end()) {
-						printf("ready to write\n");
-					}
-				}
-			}
-		}
+                        } else if (bytesReceived < buffer_size) {
+                            bool handleResult = self->_handler->handle(buffer, static_cast<size_t>(bytesReceived),
+                                                                       self, connection);
+                            if (!handleResult) {
+                                printf("warning: can't handle result\n");
+                            }
+                        } else if (bytesReceived == buffer_size) {
+                            printf("warning: receive buffer overflow\n");
+                        }
+                    }
+                } else if (FD_ISSET(i, &write_fds)) {
+                    Connections::iterator it = std::find(connections.begin(), connections.end(), i);
+                    if (it != connections.end()) {
+                        printf("ready to write\n");
+                    }
+                }
+            }
+        }
 
         for (size_t i = 0; i < connections.size(); ++i) {
             close(connections.at(i)._fd);
@@ -304,14 +306,13 @@ public:
 
     typedef void (WebServer::*request_handler_m)(const std::string &requestString);
 
-	class Response{
-	public:
-		Response(const std::vector<char>& data = std::vector<char>(), bool valid = false) : data(data), valid(valid)
-		{}
+    class Response {
+    public:
+        Response(const std::vector<char>& data = std::vector<char>(), bool valid = false) : data(data), valid(valid) {}
 
-		std::vector<char> data;
-		bool valid;
-	};
+        std::vector<char> data;
+        bool valid;
+    };
 
     class RequestHandler {
     public:
@@ -351,38 +352,38 @@ public:
         }
 
         virtual Response getResponse() {
-			const char *answer_template =
-					"HTTP/1.1 200 OK\r\n"
-					"Server: ShnaiderServer/2017-01-01\r\n"
-					"Content-Type: %s\r\n"
-					"Content-Length: %d\r\n"
-					"Connection: keep-alive\r\n"
-					"\r\n";
+            const char* answer_template =
+                    "HTTP/1.1 200 OK\r\n"
+                    "Server: ShnaiderServer/2017-01-01\r\n"
+                    "Content-Type: %s\r\n"
+                    "Content-Length: %d\r\n"
+                    "Connection: keep-alive\r\n"
+                    "\r\n";
 
-			std::vector<char> response;
+            std::vector<char> response;
 
-			std::string filename = _webServer->getDirectory() + "/" + _fileName;
+            std::string filename = _webServer->getDirectory() + "/" + _fileName;
 
-			struct stat path;
-			stat(filename.c_str(), &path);
-			if (!S_ISREG(path.st_mode)) {
-				return Response();
-			}
+            struct stat path;
+            stat(filename.c_str(), &path);
+            if (!S_ISREG(path.st_mode)) {
+                return Response();
+            }
 
-			FILE *file = fopen(filename.c_str(), "rb");
+            FILE* file = fopen(filename.c_str(), "rb");
 
             if (file) {
-				fseek(file, 0, SEEK_END);
-				long size = ftell(file);
-				rewind(file);
+                fseek(file, 0, SEEK_END);
+                long size = ftell(file);
+                rewind(file);
 
-				std::string extension = _webServer->getExtension(_fileName);
-				std::string mimeType = _webServer->getMimeTypeForExtension(extension);
+                std::string extension = _webServer->getExtension(_fileName);
+                std::string mimeType = _webServer->getMimeTypeForExtension(extension);
 
-				response.resize(strlen(answer_template) + size + 1024);
-				snprintf(response.data(), response.size(), answer_template, mimeType.c_str(), size);
+                response.resize(strlen(answer_template) + size + 1024);
+                snprintf(response.data(), response.size(), answer_template, mimeType.c_str(), size);
 
-                char *ptr = response.data() + strlen(response.data());
+                char* ptr = response.data() + strlen(response.data());
 
                 size_t bytesRead = fread(ptr, 1, static_cast<size_t>(size), file);
 
@@ -394,9 +395,9 @@ public:
                     printf("warning: read size not match\n");
                 }
 
-				fclose(file);
+                fclose(file);
 
-				return Response(response, true);
+                return Response(response, true);
             } else {
                 return Response();
             }
@@ -431,35 +432,34 @@ public:
         }
     };
 
-	class JsonHandler : public RequestHandler {
-		std::string _page;
-	public:
-		JsonHandler(const std::string &page) :
-				_page(page) {
-		}
+    class JsonHandler : public RequestHandler {
+        std::string _page;
+    public:
+        JsonHandler(const std::string& page) :
+                _page(page) {
+        }
 
-		virtual ~JsonHandler() {
-		}
+        virtual ~JsonHandler() {
+        }
 
-		virtual Response getResponse() {
-			const char *answer_template = "HTTP/1.1 200 OK\r\n"
-					"Server: ShnaiderServer/2017-01-01\r\n"
-					"Content-Type: application/json\r\n"
-					"Content-Length: %d\r\n"
-					"Connection: keep-alive\r\n"
-					"\r\n"
-					"%s"
-					"\r\n"
-			;
+        virtual Response getResponse() {
+            const char* answer_template = "HTTP/1.1 200 OK\r\n"
+                    "Server: ShnaiderServer/2017-01-01\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Content-Length: %d\r\n"
+                    "Connection: keep-alive\r\n"
+                    "\r\n"
+                    "%s"
+                    "\r\n";
 
-			std::vector<char> answer_buffer;
-			answer_buffer.resize(strlen(answer_template) + _page.size() + 1024);
-			snprintf(answer_buffer.data(), answer_buffer.size(), answer_template, _page.size(), _page.c_str());
-			return Response(answer_buffer, true);
-		}
-	};
+            std::vector<char> answer_buffer;
+            answer_buffer.resize(strlen(answer_template) + _page.size() + 1024);
+            snprintf(answer_buffer.data(), answer_buffer.size(), answer_template, _page.size(), _page.c_str());
+            return Response(answer_buffer, true);
+        }
+    };
 
-	class FunctionHandler : public RequestHandler {
+    class FunctionHandler : public RequestHandler {
     public:
         typedef Response (*handler_t)();
 
@@ -499,14 +499,14 @@ public:
         return _filesDirectory;
     }
 
-	WebServer* addRequest(const std::string& requestString, RequestHandler* handler) {
-		handler->setWebServer(this);
-		_requestHandlers.insert(std::make_pair(requestString, handler));
-		return this;
-	}
+    WebServer *addRequest(const std::string &requestString, RequestHandler *handler) {
+        handler->setWebServer(this);
+        _requestHandlers.insert(std::make_pair(requestString, handler));
+        return this;
+    }
 
-	bool handle(const std::vector<char>& data, size_t bytesReceived, ServerSocket* socket,
-				const ServerSocket::Connection& conn) {
+    bool handle(const std::vector<char> &data, size_t bytesReceived, ServerSocket *socket,
+                const ServerSocket::Connection &conn) {
 
         if (data.empty())
             return false;
@@ -519,10 +519,10 @@ public:
         ss >> method;
         ss >> request;
 
-		printf("request: %s\n", request.c_str());
+        printf("request: %s\n", request.c_str());
 
-		if (checkAndResponseFile(request, socket, conn))
-			return true;
+        if (checkAndResponseFile(request, socket, conn))
+            return true;
 
         RequestMap::iterator it = _requestHandlers.find(request);
         if (it == _requestHandlers.end())
@@ -537,66 +537,13 @@ public:
                               const ServerSocket::Connection &conn) {
         if (getDirectory().empty())
             return false;
-/*
-        // "Content-Disposition: attachment; filename=%s\r\n"
-        const char *answer_template =
-            "HTTP/1.1 200 OK\r\n"
-            "Server: ShnaiderServer/2017-01-01\r\n"
-            "Content-Type: %s\r\n"
-            "Content-Length: %d\r\n"
-            "Connection: keep-alive\r\n"
-            "\r\n";
 
-        std::vector<char> response;
-
-        std::string filename = getDirectory() + request;
-
-        struct stat path;
-        stat(filename.c_str(), &path);
-        if (!S_ISREG(path.st_mode)) {
-            return false;
+        FileHandler fileHandler(request);
+        fileHandler.setWebServer(this);
+        Response response = fileHandler.getResponse();
+        if (response.valid) {
+            socket->sendData(response.data, conn);
         }
-
-        FILE *file = fopen(filename.c_str(), "rb");
-
-        if (file) {
-            fseek(file, 0, SEEK_END);
-            long size = ftell(file);
-            rewind(file);
-
-            std::string extension = getExtension(request);
-            std::string mimeType = getMimeTypeForExtension(extension);
-
-            response.resize(strlen(answer_template) + size + 1024);
-            snprintf(response.data(), response.size(), answer_template, mimeType.c_str(), size);
-
-            char *ptr = response.data() + strlen(response.data());
-
-            size_t bytesRead = fread(ptr, 1, static_cast<size_t>(size), file);
-
-            ptr += bytesRead;
-
-            memcpy(ptr, "\r\n", 2);
-
-            if (bytesRead != size) {
-                printf("warning: read size not match\n");
-            }
-
-            fclose(file);
-
-            return socket->sendData(response, conn);
-
-        } else {
-			return false;
-        }
-*/
-
-		FileHandler fileHandler(request);
-		fileHandler.setWebServer(this);
-		Response response = fileHandler.getResponse();
-		if (response.valid){
-			socket->sendData(response.data, conn);
-		}
     }
 
     std::string getMimeTypeForExtension(const std::string &extension) const {
@@ -650,9 +597,9 @@ int main() {
         Ptr<WebServer> ws((new WebServer(9001))
             ->setDirectory("static")
             ->addRequest("/", new WebServer::FileHandler("index.html"))
-			->addRequest("/test_json", new WebServer::JsonHandler("{\"test\": 42}"))
+            ->addRequest("/test_json", new WebServer::JsonHandler("{\"test\": 42}"))
             ->addRequest("/quit", new WebServer::FunctionHandler(stopProgramRequest))
-		  	->addRequest("/update_log", new WebServer::JsonHandler("{\"log\": \"Log text\"}"))
+            ->addRequest("/update_log", new WebServer::JsonHandler("{\"log\": \"Log text\"}"))
         );
 
         pthread_mutex_lock(&mutex);
