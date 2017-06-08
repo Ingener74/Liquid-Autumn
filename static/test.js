@@ -10,9 +10,9 @@ $("#selectGame1Btn").click(function () {
     })
 });
 
-setInterval(function () {
-    $.get("update_log", function (data, status) {
-        $("#log").html(data.log)
-    })
-
-}, 1000);
+// setInterval(function () {
+//     $.get("update_log", function (data, status) {
+//         $("#log").html(data.log)
+//     })
+//
+// }, 1000);

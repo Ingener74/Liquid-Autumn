@@ -1,6 +1,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <stdarg.h>
 #include <signal.h>
 #include <errno.h>
 #include <string.h>
@@ -18,476 +19,478 @@
 
 template<typename T>
 class Ptr {
-    T* t;
-
 public:
-    Ptr(T* t = 0) :
-            t(t) {
-    }
+    Ptr(T* t = 0) : t(t) {}
+    ~Ptr() { if (t) delete t; }
+	T* operator->() { return t ? t : throw std::runtime_error("pointer is null"); }
+private:
+	T* t;
+};
 
-    ~Ptr() {
-        if (t)
-            delete t;
-    }
+std::vector<char> vxsnprintf(size_t maxlen, const char* format, ...) {
+	std::vector<char> buffer(maxlen);
+	va_list args;
+	va_start(args, format);
+	vsnprintf(buffer.data(), maxlen, format, args);
+	va_end(args);
+	return buffer;
+}
 
-    T* operator->() {
-        return t ? t : throw std::runtime_error("pointer is null");
-    }
+std::string xsnprintf(size_t maxlen, const char* format, ...) {
+	va_list args;
+	va_start(args, format);
+	std::vector<char> buffer = vxsnprintf(maxlen, format, args);
+	va_end(args);
+	return std::string(buffer.data());
+}
 
-    Ptr(const Ptr& other) {
-        *this = other;
-    }
+//#define dws_assert(cond, format, ...)
 
-    Ptr& operator=(const Ptr& other) {
-        if (this != &other) {
-            std::swap(t, const_cast<Ptr&>(other).t); // TODO const_cast bad
-        }
-        return *this;
-    }
+class ServerSocket;
+
+class IoHandler {
+public:
+	virtual void handleRead() {}
+	virtual void handleWrite() {}
+};
+
+class Io {
+public:
+	typedef std::map<int, IoHandler*> HandlersMap;
+
+	Io() {}
+
+	void wait() {
+		int nfds = 0;
+
+		fd_set read_fds;
+		fd_set write_fds;
+
+		FD_ZERO(&read_fds);
+		FD_ZERO(&write_fds);
+
+		for (HandlersMap::iterator handlerIt = _readHandlers.begin(); handlerIt != _readHandlers.end(); ++handlerIt) {
+			FD_SET(handlerIt->first, &read_fds);
+			nfds = std::max(nfds, handlerIt->first);
+		}
+		for (HandlersMap::iterator handlerIt = _writeHandlers.begin(); handlerIt != _writeHandlers.end(); ++handlerIt) {
+			FD_SET(handlerIt->first, &write_fds);
+			nfds = std::max(nfds, handlerIt->first);
+		}
+
+		if (select(nfds + 1, &read_fds, &write_fds, NULL, NULL) <= 0)
+			return;
+
+		for (int i = 0; i <= nfds; ++i)
+		{
+			if (FD_ISSET(i, &read_fds))
+			{
+				for (HandlersMap::iterator handlerIt = _readHandlers.begin(); handlerIt != _readHandlers.end(); ++handlerIt)
+				{
+					if (handlerIt->first != i) continue;
+					handlerIt->second->handleRead();
+				}
+			}
+			else if(FD_ISSET(i, &write_fds))
+			{
+				for (HandlersMap::iterator handlerIt = _writeHandlers.begin(); handlerIt != _writeHandlers.end(); ++handlerIt)
+				{
+					if (handlerIt->first != i) continue;
+					handlerIt->second->handleWrite();
+				}
+			}
+		}
+	}
+
+	Io* addHandlers(int fd, IoHandler* readHandler, IoHandler* writeHandler)
+	{
+		if (readHandler)
+			_readHandlers.insert(std::make_pair(fd, readHandler));
+		if (writeHandler)
+			_writeHandlers.insert(std::make_pair(fd, writeHandler));
+		return this;
+	}
+
+	Io* removeHandlers(int fd) {
+		HandlersMap::iterator readHandlerIt = _readHandlers.find(fd);
+		if(readHandlerIt != _readHandlers.end())
+		{
+			delete  readHandlerIt->second;
+			_readHandlers.erase(readHandlerIt);
+		}
+		HandlersMap::iterator writeHandlerIt = _writeHandlers.find(fd);
+		if(writeHandlerIt != _writeHandlers.end())
+		{
+			delete writeHandlerIt->second;
+			_writeHandlers.erase(writeHandlerIt);
+		}
+		return this;
+	}
+
+private:
+	HandlersMap _readHandlers;
+	HandlersMap _writeHandlers;
+};
+
+class Connection;
+
+class ConnectionHandler {
+public:
+	virtual ~ConnectionHandler() {
+	}
+
+	virtual bool handleRead(const std::vector<char>& data, Connection* connection) = 0;
+};
+
+class Connection: public IoHandler {
+public:
+	Connection(int fd, ConnectionHandler* connectionHandler, Io* io) : fd(fd), connectionHandler(connectionHandler), io(io)
+	{}
+
+	virtual ~Connection()
+	{
+		::shutdown(fd, SHUT_RDWR);
+		close(fd);
+	}
+
+	virtual void handleRead()
+	{
+		size_t buffer_size = 4096;
+
+		std::vector<char> buffer;
+		buffer.resize(buffer_size);
+
+		ssize_t bytesReceived = recv(fd, buffer.data(), buffer.size(), 0);
+
+		if (bytesReceived == 0)
+		{
+			::shutdown(fd, SHUT_RDWR);
+			close(fd);
+
+			io->removeHandlers(fd);
+		}
+		else if (bytesReceived < buffer_size)
+		{
+			bool handleResult = connectionHandler->handleRead(buffer, this);
+			if (!handleResult)
+			{
+				printf("warning: can't handleRead result\n");
+			}
+		}
+		else if (bytesReceived == buffer_size)
+		{
+			printf("warning: receive buffer overflow\n");
+		}
+		else if (bytesReceived < 0)
+		{
+			throw std::runtime_error(xsnprintf(64, "recv error: %s", strerror(errno)));
+		}
+	}
+
+	bool sendData(const std::vector<char> &data) {
+		return sendData(data.data(), data.size());
+	}
+
+	bool sendData(const std::string &data) {
+		return sendData(data.data(), data.size());
+	}
+
+	bool sendData(const char *data, size_t size) {
+		int summaryBytesSended = 0;
+		do {
+			char *ptr = const_cast<char *>(data) + summaryBytesSended;
+			size_t balance = size - summaryBytesSended;
+
+			ssize_t bytesSended = send(fd, ptr, balance, MSG_NOSIGNAL);
+
+			summaryBytesSended += bytesSended;
+		} while (summaryBytesSended < size);
+		return true;
+	}
+
+	int fd;
+	ConnectionHandler* connectionHandler;
+	Io* io;
+};
+
+class ConnectionListener: public IoHandler {
+public:
+	ConnectionListener(uint16_t port, Io* io, ConnectionHandler* connectionHandler) : io(io), connectionHandler(connectionHandler)
+	{
+		sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+		if (sock < 0) throw std::runtime_error(xsnprintf(64, "create socket error: %s\n", strerror(errno)));
+
+		sockaddr_in address;
+		memset(&address, 0, sizeof(address));
+		address.sin_family = AF_INET;
+		address.sin_addr.s_addr = htonl(INADDR_ANY);
+
+		while (true) {
+			address.sin_port = htons(port);
+
+			int bindResult = bind(sock, reinterpret_cast<sockaddr *>(&address), sizeof(address));
+			if (bindResult < 0) {
+				printf("bind socket error: %s\n", strerror(errno));
+				port++;
+				continue;
+			} else {
+				printf("bind socket success: %d\n", port);
+				printf("http://127.0.0.1:%d\n", port);
+				break;
+			}
+		}
+
+		int listenResult = listen(sock, 32);
+		if (listenResult < 0) throw std::runtime_error(xsnprintf(64, "listen socket error: %s\n", strerror(errno)));
+
+		io->addHandlers(sock, this, NULL);
+	}
+
+	virtual ~ConnectionListener()
+	{
+        ::shutdown(sock, SHUT_RDWR);
+        close(sock);
+	}
+
+	virtual void handleRead()
+	{
+		int fd = accept(sock, NULL, NULL);
+		io->addHandlers(fd, new Connection(fd, connectionHandler, io), NULL);
+	}
+
+	Io* io;
+	int sock;
+	ConnectionHandler* connectionHandler;
+};
+
+class Pipes: public IoHandler {
+public:
+	Pipes(Io* io, bool* work) : work(work)
+	{
+		if (pipe(pfds) < 0) throw std::runtime_error(xsnprintf(64, "can't create pipes: %s\n", strerror(errno)));
+
+		int flags = 0;
+
+		flags = fcntl(pfds[0], F_GETFL);
+		if (flags < 0) throw std::runtime_error(xsnprintf(64, "can't get pipe flags: %s\n", strerror(errno)));
+
+		flags |= O_NONBLOCK;
+		if (fcntl(pfds[0], F_SETFL, flags) < 0) throw std::runtime_error(xsnprintf(64, "can't set pipe flags: %s\n", strerror(errno)));
+
+		flags = fcntl(pfds[1], F_GETFL);
+		if (flags < 0) throw std::runtime_error(xsnprintf(64, "can't get pipe flags: %s\n", strerror(errno)));
+
+		flags |= O_NONBLOCK;
+		if (fcntl(pfds[1], F_SETFL, flags) < 0) throw std::runtime_error(xsnprintf(64, "can't set pipe flags: %s\n", strerror(errno)));
+
+		io->addHandlers(pfds[0], this, NULL);
+	}
+
+	virtual ~Pipes()
+	{
+        close(pfds[0]);
+        close(pfds[1]);
+	}
+
+	bool shutdown()
+	{
+		int savedErrno = errno;
+		bool result = write(pfds[1], "x", 1) < 0 && errno != EAGAIN;
+		errno = savedErrno;
+		return result;
+	}
+
+	virtual void handleRead()
+	{
+		if (work)
+			*work = false;
+	}
+
+	int pfds[2];
+	bool *work;
 };
 
 class ServerSocket {
 public:
-    class Connection {
-    public:
-        Connection(int fd) :
-                _fd(fd) {
-        }
-
-        operator int() const {
-            return _fd;
-        }
-
-        int _fd;
-    };
-
-    typedef std::vector<Connection> Connections;
-
-    class Handler {
-    public:
-        virtual ~Handler() {
-        }
-
-        virtual bool handle(const std::vector<char> &data, size_t bytesReceived, ServerSocket *socket,
-                            const Connection &conn) = 0;
-    };
-
-    ServerSocket(uint16_t port = 8080) :
-            _port(port) {
-        pthread_create(&_thread, NULL, threadBody, this);
+    ServerSocket(uint16_t port, ConnectionHandler* connectionHandler) :
+			port(port), connectionHandler(connectionHandler)
+	{
+        pthread_create(&thread, NULL, threadBody, this);
     }
 
     ~ServerSocket() {
         shutdown();
-        printf("before join\n");
-        pthread_join(_thread, NULL);
-        printf("after join\n");
+        pthread_join(thread, NULL);
     }
 
     static void *threadBody(void *userData) {
         ServerSocket *self = static_cast<ServerSocket *>(userData);
+		try
+		{
+			Io io;
+			ConnectionListener connectionListener(self->port, &io, self->connectionHandler);
 
-        int sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-        if (sock < 0) {
-            printf("create socket error: %s\n", strerror(errno));
-            return NULL;
-        }
+			bool work = true;
+			Pipes pipes(&io, &work);
+			self->pipes = &pipes;
 
-        sockaddr_in address;
-        memset(&address, 0, sizeof(address));
-        address.sin_family = AF_INET;
-        address.sin_addr.s_addr = htonl(INADDR_ANY);
-
-        uint16_t port = self->_port;
-
-        while (true) {
-            address.sin_port = htons(port);
-
-            int bindResult = bind(sock, reinterpret_cast<sockaddr *>(&address), sizeof(address));
-            if (bindResult < 0) {
-                printf("bind socket error: %s\n", strerror(errno));
-                port++;
-                continue;
-            } else {
-                printf("bind socket success: %d\n", port);
-
-                printf("http://127.0.0.1:%d\n", port);
-
-                break;
-            }
-        }
-
-        int listenResult = listen(sock, 32);
-        if (listenResult < 0) {
-            printf("listen socket error: %s\n", strerror(errno));
-            return NULL;
-        }
-
-        Connections connections;
-
-        fd_set read_fds;
-        fd_set write_fds;
-
-        if (pipe(self->_pfds) < 0) {
-            printf("can't create pipes: %s\n", strerror(errno));
-            return NULL;
-        }
-
-        int flags = 0;
-        flags = fcntl(self->_pfds[0], F_GETFL);
-        if (flags < 0) {
-            printf("can't get pipe flags: %s\n", strerror(errno));
-            return NULL;
-        }
-        flags |= O_NONBLOCK;
-        if (fcntl(self->_pfds[0], F_SETFL, flags) < 0) {
-            printf("can't set pipe flags: %s\n", strerror(errno));
-            return NULL;
-        }
-
-        flags = fcntl(self->_pfds[1], F_GETFL);
-        if (flags < 0) {
-            printf("can't get pipe flags: %s\n", strerror(errno));
-            return NULL;
-        }
-        flags |= O_NONBLOCK;
-        if (fcntl(self->_pfds[1], F_SETFL, flags) < 0) {
-            printf("can't set pipe flags: %s\n", strerror(errno));
-            return NULL;
-        }
-
-        bool work = true;
-
-        while (work) {
-            int nfds = 0;
-            FD_ZERO(&read_fds);
-            FD_ZERO(&write_fds);
-
-            FD_SET(self->_pfds[0], &read_fds); // self-pipe trick
-            nfds = std::max(nfds, self->_pfds[0]);
-
-            FD_SET(sock, &read_fds);
-            nfds = std::max(nfds, sock);
-
-            for (size_t j = 0; j < connections.size(); ++j) {
-                int fd = connections.at(j)._fd;
-                FD_SET(fd, &read_fds);
-                nfds = std::max(nfds, fd);
-            }
-
-            int selectResult = select(nfds + 1, &read_fds, NULL, NULL, NULL);
-
-            if (selectResult <= 0)
-                continue;
-
-            for (int i = 0; i <= nfds; ++i) {
-                if (FD_ISSET(i, &read_fds)) {
-                    if (i == self->_pfds[0]) {
-                        printf("quit\n");
-                        work = false;
-                        break;
-                    }
-
-                    if (i == sock) {
-                        printf("new connection\n");
-
-                        int fd = accept(sock, NULL, NULL);
-                        connections.push_back(Connection(fd));
-
-                        nfds = std::max(nfds, fd);
-
-                        FD_SET(fd, &read_fds);
-
-                        continue;
-                    }
-
-                    Connections::iterator it = std::find(connections.begin(), connections.end(), i);
-                    if (it != connections.end()) {
-                        size_t buffer_size = 4096;
-
-                        std::vector<char> buffer;
-                        buffer.resize(buffer_size);
-
-                        int connection = (*it)._fd;
-
-                        ssize_t bytesReceived = recv(connection, buffer.data(), buffer.size(), 0);
-
-                        if (bytesReceived == 0) {
-                            FD_CLR(it->_fd, &read_fds);
-                            ::shutdown(it->_fd, SHUT_RDWR);
-                            close(it->_fd);
-                            connections.erase(it);
-
-                        } else if (bytesReceived < buffer_size) {
-                            bool handleResult = self->_handler->handle(buffer, static_cast<size_t>(bytesReceived),
-                                                                       self, connection);
-                            if (!handleResult) {
-                                printf("warning: can't handle result\n");
-                            }
-                        } else if (bytesReceived == buffer_size) {
-                            printf("warning: receive buffer overflow\n");
-                        }
-                    }
-                } else if (FD_ISSET(i, &write_fds)) {
-                    Connections::iterator it = std::find(connections.begin(), connections.end(), i);
-                    if (it != connections.end()) {
-                        printf("ready to write\n");
-                    }
-                }
-            }
-        }
-
-        for (size_t i = 0; i < connections.size(); ++i) {
-            close(connections.at(i)._fd);
-        }
-
-        ::shutdown(sock, SHUT_RDWR);
-        close(sock);
-
-        close(self->_pfds[0]);
-        close(self->_pfds[1]);
-
-        printf("server socket thread end\n");
+			while (work)
+				try
+				{
+					io.wait();
+				}
+				catch (std::runtime_error const& e)
+				{
+					printf("handleRead error: %s\n", e.what());
+				}
+		}
+		catch (std::exception const& e)
+		{
+			printf("error: %s\n", e.what());
+		}
         return NULL;
     }
 
-    bool sendData(const std::vector<char> &data, const Connection &conn) {
-        return sendData(data.data(), data.size(), conn);
+    ConnectionHandler *getHandler() {
+        return connectionHandler;
     }
 
-    bool sendData(const std::string &data, const Connection &conn) {
-        return sendData(data.data(), data.size(), conn);
-    }
-
-    bool sendData(const char *data, size_t size, const Connection &conn) {
-        int summaryBytesSended = 0;
-        do {
-            char *ptr = const_cast<char *>(data) + summaryBytesSended;
-            size_t balance = size - summaryBytesSended;
-
-            ssize_t bytesSended = send(conn._fd, ptr, balance, MSG_NOSIGNAL);
-
-//            printf("send %zi of %zi bytes to %d connection\n", size, bytesSended, conn._fd);
-//            printf("data %s\n", data);
-
-            summaryBytesSended += bytesSended;
-
-        } while (summaryBytesSended < size);
-        return true;
-    }
-
-    Handler *getHandler() {
-        return _handler;
-    }
-
-    void setHandler(Handler *handler) {
-        this->_handler = handler;
+    void setHandler(ConnectionHandler *connectionHandler) {
+        this->connectionHandler = connectionHandler;
     }
 
     bool shutdown() {
-        printf("shutdown\n");
-        int savedErrno = errno;
-        bool result = write(_pfds[1], "x", 1) < 0 && errno != EAGAIN;
-        errno = savedErrno;
-        return result;
+        return pipes->shutdown();
     }
 
 private:
-    uint16_t _port;
-    pthread_t _thread;
+    uint16_t port;
+    pthread_t thread;
 
-    Handler *_handler;
-    int _pfds[2];
+    ConnectionHandler *connectionHandler;
+	Pipes* pipes;
 };
 
-class WebServer : public ServerSocket::Handler {
+class Response {
 public:
-    typedef void (*request_handler_f)(const std::string &requestString, WebServer *);
+	Response(const std::vector<char>& data = std::vector<char>(), bool valid = false) : data(data), valid(valid) {}
 
-    typedef void (WebServer::*request_handler_m)(const std::string &requestString);
+	std::vector<char> data;
+	bool valid;
+};
 
-    class Response {
-    public:
-        Response(const std::vector<char>& data = std::vector<char>(), bool valid = false) : data(data), valid(valid) {}
+class WebServer;
 
-        std::vector<char> data;
-        bool valid;
-    };
+class RequestHandler {
+public:
+	RequestHandler() : _webServer(NULL) {}
+	virtual ~RequestHandler() {}
 
-    class RequestHandler {
-    public:
-        RequestHandler() :
-                _webServer(NULL) {
-        }
+	virtual Response getResponse() = 0;
 
-        virtual ~RequestHandler() {
-        }
+	WebServer *getWebServer() {
+		return _webServer;
+	}
 
-        virtual Response getResponse() = 0;
+	RequestHandler *setWebServer(WebServer *webServer) {
+		_webServer = webServer;
+		return this;
+	}
 
-        WebServer *getWebServer() {
-            return _webServer;
-        }
+protected:
+	WebServer *_webServer;
+};
 
-        RequestHandler *setWebServer(WebServer *webServer) {
-            _webServer = webServer;
-            return this;
-        }
+class FileHandler : public RequestHandler {
+	std::string _fileName;
+public:
+	FileHandler(const std::string &fileName) :
+			_fileName(fileName) {
+	}
 
-    protected:
+	virtual ~FileHandler() {
+	}
 
-        WebServer *_webServer;
-    };
+	virtual Response getResponse();
+};
 
-    typedef std::map<std::string, Ptr<RequestHandler> > RequestMap;
+class PageHandler : public RequestHandler {
+	std::string _page;
+public:
+	PageHandler(const std::string &page = 0) : _page(page) {}
+	virtual ~PageHandler() {}
 
-    class FileHandler : public RequestHandler {
-        std::string _fileName;
-    public:
-        FileHandler(const std::string &fileName) :
-                _fileName(fileName) {
-        }
+	virtual Response getResponse() {
+		const char *answer_template =
+			"HTTP/1.1 200 OK\r\n"
+			"Server: ShnaiderServer/2017-01-01\r\n"
+			"Content-Type: text/html\r\n"
+			"Content-Length: %d\r\n"
+			"Connection: keep-alive\r\n"
+			"\r\n"
+			"%s"
+			"\r\n"
+		;
 
-        virtual ~FileHandler() {
-        }
+		size_t size = strlen(answer_template) + _page.size() + 1024;
+		return Response(vxsnprintf(size, answer_template, _page.size(), _page.c_str()), true);
+	}
+};
 
-        virtual Response getResponse() {
-            const char* answer_template =
-                    "HTTP/1.1 200 OK\r\n"
-                    "Server: ShnaiderServer/2017-01-01\r\n"
-                    "Content-Type: %s\r\n"
-                    "Content-Length: %d\r\n"
-                    "Connection: keep-alive\r\n"
-                    "\r\n";
+class JsonHandler : public RequestHandler {
+	std::string _page;
+public:
+	JsonHandler(const std::string& page) : _page(page) {}
+	virtual ~JsonHandler() {}
 
-            std::vector<char> response;
+	virtual Response getResponse() {
+		const char* answer_template =
+			"HTTP/1.1 200 OK\r\n"
+			"Server: ShnaiderServer/2017-01-01\r\n"
+			"Content-Type: application/json\r\n"
+			"Content-Length: %d\r\n"
+			"Connection: keep-alive\r\n"
+			"\r\n"
+			"%s"
+			"\r\n"
+		;
 
-            std::string filename = _webServer->getDirectory() + "/" + _fileName;
+		size_t len = strlen(answer_template) + _page.size() + 1024;
+		return Response(vxsnprintf(len, answer_template, _page.size(), _page.c_str()), true);
+	}
+};
 
-            struct stat path;
-            stat(filename.c_str(), &path);
-            if (!S_ISREG(path.st_mode)) {
-                return Response();
-            }
+class FunctionHandler : public RequestHandler {
+public:
+	typedef Response (*handler_t)();
 
-            FILE* file = fopen(filename.c_str(), "rb");
+	FunctionHandler(handler_t handler = 0) : handler(handler) {}
 
-            if (file) {
-                fseek(file, 0, SEEK_END);
-                long size = ftell(file);
-                rewind(file);
+	virtual Response getResponse() {
+		return handler ? handler() : Response();
+	}
 
-                std::string extension = _webServer->getExtension(_fileName);
-                std::string mimeType = _webServer->getMimeTypeForExtension(extension);
+private:
+	handler_t handler;
+};
 
-                response.resize(strlen(answer_template) + size + 1024);
-                snprintf(response.data(), response.size(), answer_template, mimeType.c_str(), size);
+class WebServer : public ConnectionHandler {
+public:
+    typedef std::map<std::string, RequestHandler*> RequestMap;
 
-                char* ptr = response.data() + strlen(response.data());
-
-                size_t bytesRead = fread(ptr, 1, static_cast<size_t>(size), file);
-
-                ptr += bytesRead;
-
-                memcpy(ptr, "\r\n", 2);
-
-                if (bytesRead != size) {
-                    printf("warning: read size not match\n");
-                }
-
-                fclose(file);
-
-                return Response(response, true);
-            } else {
-                return Response();
-            }
-        }
-    };
-
-    class PageHandler : public RequestHandler {
-        std::string _page;
-    public:
-        PageHandler(const std::string &page = 0) :
-                _page(page) {
-        }
-
-        virtual ~PageHandler() {
-        }
-
-        virtual Response getResponse() {
-            const char *answer_template = "HTTP/1.1 200 OK\r\n"
-                    "Server: ShnaiderServer/2017-01-01\r\n"
-                    "Content-Type: text/html\r\n"
-                    "Content-Length: %d\r\n"
-                    "Connection: keep-alive\r\n"
-                    "\r\n"
-                    "%s"
-                    "\r\n"
-            ;
-
-            std::vector<char> answer_buffer;
-            answer_buffer.resize(strlen(answer_template) + _page.size() + 1024);
-            snprintf(answer_buffer.data(), answer_buffer.size(), answer_template, _page.size(), _page.c_str());
-            return answer_buffer;
-        }
-    };
-
-    class JsonHandler : public RequestHandler {
-        std::string _page;
-    public:
-        JsonHandler(const std::string& page) :
-                _page(page) {
-        }
-
-        virtual ~JsonHandler() {
-        }
-
-        virtual Response getResponse() {
-            const char* answer_template = "HTTP/1.1 200 OK\r\n"
-                    "Server: ShnaiderServer/2017-01-01\r\n"
-                    "Content-Type: application/json\r\n"
-                    "Content-Length: %d\r\n"
-                    "Connection: keep-alive\r\n"
-                    "\r\n"
-                    "%s"
-                    "\r\n";
-
-            std::vector<char> answer_buffer;
-            answer_buffer.resize(strlen(answer_template) + _page.size() + 1024);
-            snprintf(answer_buffer.data(), answer_buffer.size(), answer_template, _page.size(), _page.c_str());
-            return Response(answer_buffer, true);
-        }
-    };
-
-    class FunctionHandler : public RequestHandler {
-    public:
-        typedef Response (*handler_t)();
-
-        FunctionHandler(handler_t handler = 0) :
-                _handler(handler) {
-        }
-
-        virtual ~FunctionHandler() {
-        }
-
-        virtual Response getResponse() {
-            return _handler ? _handler() : Response();
-        }
-
-    private:
-        handler_t _handler;
-    };
-
-    WebServer(uint16_t port = 8080) :
-            _socket(new ServerSocket(port)) {
-        _extToFileType.insert(std::make_pair("html", "text/html"));
-        _extToFileType.insert(std::make_pair("js", "text/javascript"));
-        _extToFileType.insert(std::make_pair("ico", "image/x-icon"));
-        _extToFileType.insert(std::make_pair("png", "image/png"));
-        _socket->setHandler(this);
-    }
+	WebServer(uint16_t port = 8080) :
+			_socket(new ServerSocket(port, this))
+	{
+		_extToFileType.insert(std::make_pair("html", "text/html"));
+		_extToFileType.insert(std::make_pair("js", "text/javascript"));
+		_extToFileType.insert(std::make_pair("ico", "image/x-icon"));
+		_extToFileType.insert(std::make_pair("png", "image/png"));
+	}
 
     ~WebServer() {
+		for (RequestMap::iterator requestIt = _requestHandlers.begin(); requestIt != _requestHandlers.end(); ++requestIt) {
+			delete requestIt->second;
+		}
     }
 
     WebServer *setDirectory(const std::string &filesDirectory) {
@@ -499,15 +502,14 @@ public:
         return _filesDirectory;
     }
 
-    WebServer *addRequest(const std::string &requestString, RequestHandler *handler) {
-        handler->setWebServer(this);
-        _requestHandlers.insert(std::make_pair(requestString, handler));
+    WebServer *addRequest(const std::string &requestString, RequestHandler *requestHandler) {
+        requestHandler->setWebServer(this);
+        _requestHandlers.insert(std::make_pair(requestString, requestHandler));
         return this;
     }
 
-    bool handle(const std::vector<char> &data, size_t bytesReceived, ServerSocket *socket,
-                const ServerSocket::Connection &conn) {
-
+    bool handleRead(const std::vector<char>& data, Connection* connection)
+	{
         if (data.empty())
             return false;
 
@@ -519,22 +521,19 @@ public:
         ss >> method;
         ss >> request;
 
-        printf("request: %s\n", request.c_str());
-
-        if (checkAndResponseFile(request, socket, conn))
+        if (checkAndResponseFile(request, connection))
             return true;
 
         RequestMap::iterator it = _requestHandlers.find(request);
         if (it == _requestHandlers.end())
             return false;
 
-        Response response = it->second->getResponse();
+		Response response = it->second->getResponse();
 
-        return socket->sendData(response.data, conn);
+		return response.valid ? connection->sendData(response.data) : false;
     }
 
-    bool checkAndResponseFile(const std::string &request, ServerSocket *socket,
-                              const ServerSocket::Connection &conn) {
+    bool checkAndResponseFile(const std::string &request, Connection *connection) {
         if (getDirectory().empty())
             return false;
 
@@ -542,8 +541,10 @@ public:
         fileHandler.setWebServer(this);
         Response response = fileHandler.getResponse();
         if (response.valid) {
-            socket->sendData(response.data, conn);
+            connection->sendData(response.data);
+			return true;
         }
+		return false;
     }
 
     std::string getMimeTypeForExtension(const std::string &extension) const {
@@ -565,10 +566,66 @@ public:
 
 private:
     Ptr<ServerSocket> _socket;
-    std::map<std::string, Ptr<RequestHandler> > _requestHandlers;
+    RequestMap _requestHandlers;
     std::string _filesDirectory;
     std::map<std::string, std::string> _extToFileType;
 };
+
+Response FileHandler::getResponse() {
+	const char* answer_template =
+		"HTTP/1.1 200 OK\r\n"
+		"Server: ShnaiderServer/2017-01-01\r\n"
+		"Content-Type: %s\r\n"
+		"Content-Length: %d\r\n"
+		"Connection: keep-alive\r\n"
+		"\r\n";
+
+	std::vector<char> response;
+
+	std::string sep;
+	if (_fileName.at(0) != '/')
+		sep = "/";
+
+	std::string filename = _webServer->getDirectory() + sep + _fileName;
+
+	struct stat path;
+	stat(filename.c_str(), &path);
+	if (!S_ISREG(path.st_mode)) {
+		return Response();
+	}
+
+	FILE* file = fopen(filename.c_str(), "rb");
+
+	if (file) {
+		fseek(file, 0, SEEK_END);
+		long size = ftell(file);
+		rewind(file);
+
+		std::string extension = _webServer->getExtension(_fileName);
+		std::string mimeType = _webServer->getMimeTypeForExtension(extension);
+
+		response.resize(strlen(answer_template) + size + 1024);
+		snprintf(response.data(), response.size(), answer_template, mimeType.c_str(), size);
+
+		char* ptr = response.data() + strlen(response.data());
+
+		size_t bytesRead = fread(ptr, 1, static_cast<size_t>(size), file);
+
+		ptr += bytesRead;
+
+		memcpy(ptr, "\r\n", 2);
+
+		if (bytesRead != size) {
+			printf("warning: read size not match\n");
+		}
+
+		fclose(file);
+
+		return Response(response, true);
+	} else {
+		return Response();
+	}
+}
 
 pthread_mutex_t mutex;
 pthread_cond_t cond;
@@ -581,10 +638,10 @@ void signal_handler(int) {
     pthread_mutex_unlock(&mutex);
 }
 
-WebServer::Response stopProgramRequest() {
+Response stopProgramRequest() {
     programWork = false;
     signal_handler(0);
-    return WebServer::Response();
+    return Response();
 }
 
 int main() {
@@ -596,17 +653,15 @@ int main() {
 
         Ptr<WebServer> ws((new WebServer(9001))
             ->setDirectory("static")
-            ->addRequest("/", new WebServer::FileHandler("index.html"))
-            ->addRequest("/test_json", new WebServer::JsonHandler("{\"test\": 42}"))
-            ->addRequest("/quit", new WebServer::FunctionHandler(stopProgramRequest))
-            ->addRequest("/update_log", new WebServer::JsonHandler("{\"log\": \"Log text\"}"))
+            ->addRequest("/", new FileHandler("index.html"))
+            ->addRequest("/test_json", new JsonHandler("{\"test\": 42}"))
+            ->addRequest("/quit", new FunctionHandler(stopProgramRequest))
+            ->addRequest("/update_log", new JsonHandler("{\"log\": \"Log text\"}"))
         );
 
         pthread_mutex_lock(&mutex);
         pthread_cond_wait(&cond, &mutex);
         pthread_mutex_unlock(&mutex);
-
-        printf("exit\n");
     }
     pthread_mutex_destroy(&mutex);
     pthread_cond_destroy(&cond);
