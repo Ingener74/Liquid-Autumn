@@ -14,20 +14,22 @@
 #include <vector>
 #include <sstream>
 #include <algorithm>
+#include <iostream>
 
 // json: https://github.com/zserge/jsmn
 
-template<typename T>
-class Ptr {
-public:
-    Ptr(T* t = 0) : t(t) {}
-    ~Ptr() { if (t) delete t; }
-	T* operator->() { return t ? t : throw std::runtime_error("pointer is null"); }
-private:
-	T* t;
-};
+#define dws_assert(cond, format, ...) if((cond)) throw std::runtime_error(xsnprintf(128, format, __VA_ARGS__));
 
-std::vector<char> vxsnprintf(size_t maxlen, const char* format, ...) {
+class ServerSocket;
+class Connection;
+class ConnectionListener;
+class WebServer;
+
+typedef std::vector<Connection*> Connections;
+typedef std::map<std::string, std::string> Params;
+typedef std::vector<char> ByteBuffer;
+
+ByteBuffer vxsnprintf(size_t maxlen, const char* format, ...) {
 	std::vector<char> buffer(maxlen);
 	va_list args;
 	va_start(args, format);
@@ -44,9 +46,38 @@ std::string xsnprintf(size_t maxlen, const char* format, ...) {
 	return std::string(buffer.data());
 }
 
-//#define dws_assert(cond, format, ...)
+template <typename K, typename V>
+class CreateMap
+{
+private:
+	std::map<K, V> map;
+public:
+	CreateMap(const K& key, const V& val)
+	{
+		map[key] = val;
+	}
 
-class ServerSocket;
+	CreateMap<K, V>& operator()(const K& key, const V& val)
+	{
+		map[key] = val;
+		return *this;
+	}
+
+	operator std::map<K, V>()
+	{
+		return map;
+	}
+};
+
+template<typename T>
+class Ptr {
+public:
+    Ptr(T* t = 0) : t(t) {}
+    ~Ptr() { if (t) delete t; }
+	T* operator->() { return t ? t : throw std::runtime_error("pointer is null"); }
+private:
+	T* t;
+};
 
 class IoHandler {
 public:
@@ -115,13 +146,11 @@ public:
 		HandlersMap::iterator readHandlerIt = _readHandlers.find(fd);
 		if(readHandlerIt != _readHandlers.end())
 		{
-			delete  readHandlerIt->second;
 			_readHandlers.erase(readHandlerIt);
 		}
 		HandlersMap::iterator writeHandlerIt = _writeHandlers.find(fd);
 		if(writeHandlerIt != _writeHandlers.end())
 		{
-			delete writeHandlerIt->second;
 			_writeHandlers.erase(writeHandlerIt);
 		}
 		return this;
@@ -132,7 +161,6 @@ private:
 	HandlersMap _writeHandlers;
 };
 
-class Connection;
 
 class ConnectionHandler {
 public:
@@ -144,7 +172,8 @@ public:
 
 class Connection: public IoHandler {
 public:
-	Connection(int fd, ConnectionHandler* connectionHandler, Io* io) : fd(fd), connectionHandler(connectionHandler), io(io)
+	Connection(int fd, ConnectionHandler* connectionHandler, ConnectionListener* connectionListener)
+			: fd(fd), connectionHandler(connectionHandler), connectionListener(connectionListener)
 	{}
 
 	virtual ~Connection()
@@ -153,39 +182,7 @@ public:
 		close(fd);
 	}
 
-	virtual void handleRead()
-	{
-		size_t buffer_size = 4096;
-
-		std::vector<char> buffer;
-		buffer.resize(buffer_size);
-
-		ssize_t bytesReceived = recv(fd, buffer.data(), buffer.size(), 0);
-
-		if (bytesReceived == 0)
-		{
-			::shutdown(fd, SHUT_RDWR);
-			close(fd);
-
-			io->removeHandlers(fd);
-		}
-		else if (bytesReceived < buffer_size)
-		{
-			bool handleResult = connectionHandler->handleRead(buffer, this);
-			if (!handleResult)
-			{
-				printf("warning: can't handleRead result\n");
-			}
-		}
-		else if (bytesReceived == buffer_size)
-		{
-			printf("warning: receive buffer overflow\n");
-		}
-		else if (bytesReceived < 0)
-		{
-			throw std::runtime_error(xsnprintf(64, "recv error: %s", strerror(errno)));
-		}
-	}
+	virtual void handleRead();
 
 	bool sendData(const std::vector<char> &data) {
 		return sendData(data.data(), data.size());
@@ -210,7 +207,7 @@ public:
 
 	int fd;
 	ConnectionHandler* connectionHandler;
-	Io* io;
+	ConnectionListener* connectionListener;
 };
 
 class ConnectionListener: public IoHandler {
@@ -248,6 +245,9 @@ public:
 
 	virtual ~ConnectionListener()
 	{
+		for (Connections::iterator it = connections.begin(); it != connections.end(); ++it) {
+			delete (*it);
+		}
         ::shutdown(sock, SHUT_RDWR);
         close(sock);
 	}
@@ -255,13 +255,58 @@ public:
 	virtual void handleRead()
 	{
 		int fd = accept(sock, NULL, NULL);
-		io->addHandlers(fd, new Connection(fd, connectionHandler, io), NULL);
+		Connection* connection = new Connection(fd, connectionHandler, this);
+		connections.push_back(connection);
+		io->addHandlers(fd, connection, NULL);
+	}
+
+	void remoteConnection(Connection* connection) {
+		Connections::iterator connectionIt = std::find(connections.begin(), connections.end(), connection);
+		if (connectionIt != connections.end()) {
+			io->removeHandlers((*connectionIt)->fd);
+			delete (*connectionIt);
+			connections.erase(connectionIt);
+		}
 	}
 
 	Io* io;
 	int sock;
 	ConnectionHandler* connectionHandler;
+	Connections connections;
 };
+
+void Connection::handleRead()
+{
+	size_t buffer_size = 4096;
+
+	std::vector<char> buffer;
+	buffer.resize(buffer_size);
+
+	ssize_t bytesReceived = recv(fd, buffer.data(), buffer.size(), 0);
+
+	if (bytesReceived == 0)
+	{
+		::shutdown(fd, SHUT_RDWR);
+		close(fd);
+
+		connectionListener->remoteConnection(this);
+	}
+	else if (bytesReceived < buffer_size)
+	{
+		if (!connectionHandler->handleRead(buffer, this))
+		{
+			printf("warning: handleRead fail\n");
+		}
+	}
+	else if (bytesReceived == buffer_size)
+	{
+		printf("warning: receive buffer overflow\n");
+	}
+	else if (bytesReceived < 0)
+	{
+		throw std::runtime_error(xsnprintf(64, "recv error: %s", strerror(errno)));
+	}
+}
 
 class Pipes: public IoHandler {
 public:
@@ -371,6 +416,101 @@ private:
 	Pipes* pipes;
 };
 
+struct Request {
+	enum Method {
+		GET       = 0x01,
+		POST      = 0x02,
+		INVALID   = 0xFF,
+		ALL       = GET | POST,
+	};
+
+	Request(Method method = INVALID, const std::string& request = "") : method(method), request(request)
+	{}
+
+	Request(const std::string& methodStr, const std::string& fullRequest)
+	{
+		method =
+				methodStr == "GET" ? Request::GET :
+				methodStr == "POST" ? Request::POST : Request::INVALID;
+
+		std::string resRequest, resParams;
+		if (splitTwiceByChar(resRequest, resParams, fullRequest, '?')) {
+			this->request = resRequest;
+
+			std::vector<std::string> params;
+			splitParams(params, resParams);
+			splitParam(this->params, params);
+		} else {
+			this->request = fullRequest;
+		}
+	}
+
+	static void splitParams(std::vector<std::string>& params, const std::string& fullParams) {
+		std::stringstream paramStream(fullParams);
+		std::string token;
+		while(getline(paramStream, token, '&'))
+			params.push_back(token);
+	}
+
+	static bool splitTwiceByChar(std::string& first, std::string& second, const std::string& str, char delim) {
+		std::stringstream stream(str);
+		std::string token;
+		std::vector<std::string> tokens;
+		while(getline(stream, token, delim))
+			tokens.push_back(token);
+		if (tokens.size() < 1 && tokens.size() > 2)
+			return false;
+		if (tokens.size() >= 1)
+			first = tokens.at(0);
+		if (tokens.size() >= 2)
+			second = tokens.at(1);
+		return true;
+	}
+
+	static void splitParam(Params& params, const std::vector<std::string>& fullParams) {
+		for (std::vector<std::string>::const_iterator it = fullParams.begin(); it != fullParams.end(); ++it) {
+			std::string first, second;
+			if(splitTwiceByChar(first, second, *it, '='))
+				params.insert(std::make_pair(first, second));
+		}
+	}
+
+	operator bool() const {
+		return method != INVALID && !request.empty();
+	}
+
+	friend bool operator<(const Request& lhs, const Request& rhs);
+
+	friend std::ostream& operator<<(std::ostream& os, const Request& request);
+
+	Method method;
+	std::string request;
+
+	Params params;
+};
+
+bool operator<(const Request& lhs, const Request& rhs)
+{
+//	if (lhs.method < rhs.method)
+//		return true;
+//	if (rhs.method < lhs.method)
+//		return false;
+	return lhs.request < rhs.request;
+}
+
+std::ostream& operator<<(std::ostream& os, const Request& request)
+{
+	os << "method: " << request.method << ", request: " << request.request;
+	if (request.params.empty())
+		return os;
+	os << ", params: { ";
+	for (Params::const_iterator it = request.params.begin(); it != request.params.end(); ++it) {
+		os << "[" << it->first << ": " << it->second << "], ";
+	}
+	os << "}";
+	return os;
+}
+
 class Response {
 public:
 	Response(const std::vector<char>& data = std::vector<char>(), bool valid = false) : data(data), valid(valid) {}
@@ -379,14 +519,12 @@ public:
 	bool valid;
 };
 
-class WebServer;
-
 class RequestHandler {
 public:
 	RequestHandler() : _webServer(NULL) {}
 	virtual ~RequestHandler() {}
 
-	virtual Response getResponse() = 0;
+	virtual Response getResponse(const Request& request = Request()) = 0;
 
 	WebServer *getWebServer() {
 		return _webServer;
@@ -411,7 +549,7 @@ public:
 	virtual ~FileHandler() {
 	}
 
-	virtual Response getResponse();
+	virtual Response getResponse(const Request& request);
 };
 
 class PageHandler : public RequestHandler {
@@ -420,9 +558,10 @@ public:
 	PageHandler(const std::string &page = 0) : _page(page) {}
 	virtual ~PageHandler() {}
 
-	virtual Response getResponse() {
+	virtual Response getResponse(const Request& request)
+	{
 		const char *answer_template =
-			"HTTP/1.1 200 OK\r\n"
+			"Http/1.1 200 OK\r\n"
 			"Server: ShnaiderServer/2017-01-01\r\n"
 			"Content-Type: text/html\r\n"
 			"Content-Length: %d\r\n"
@@ -443,9 +582,10 @@ public:
 	JsonHandler(const std::string& page) : _page(page) {}
 	virtual ~JsonHandler() {}
 
-	virtual Response getResponse() {
+	virtual Response getResponse(const Request& request)
+	{
 		const char* answer_template =
-			"HTTP/1.1 200 OK\r\n"
+			"Http/1.1 200 OK\r\n"
 			"Server: ShnaiderServer/2017-01-01\r\n"
 			"Content-Type: application/json\r\n"
 			"Content-Length: %d\r\n"
@@ -462,27 +602,136 @@ public:
 
 class FunctionHandler : public RequestHandler {
 public:
-	typedef Response (*handler_t)();
+	typedef Response (*handler_t)(const Params&);
 
 	FunctionHandler(handler_t handler = 0) : handler(handler) {}
 
-	virtual Response getResponse() {
-		return handler ? handler() : Response();
+	virtual Response getResponse(const Request& request)
+	{
+		return handler ? handler(request.params) : Response();
 	}
 
 private:
 	handler_t handler;
 };
 
+class HttpResponseBuilder {
+public:
+
+	enum Protocol {
+		Http,
+		PROTOCOL_COUNT,
+	};
+
+	enum ErrorCode {
+		OK_200                                   = 200,
+		NotFound_404                             = 404,
+		NotImplemented_501                       = 501,
+		ErrorCode_Count
+	};
+
+	enum ConnectionType {
+		KeepAlive, Close,
+	};
+
+	typedef std::map<ErrorCode, const char*> ErrorCodeCommentMap;
+	static ErrorCodeCommentMap errorCodeCommentMap;
+
+	HttpResponseBuilder()
+			: protocol(Http)
+			, protocolVersionMajor(1)
+			, protocolVersionMinor(1)
+			, errorCode(OK_200)
+			, serverName("ShnaiderServer/2017-01-01")
+			, contentType("")
+			, connectionType(KeepAlive)
+	{}
+
+	HttpResponseBuilder& setProtocol(Protocol protocol) {
+		this->protocol = protocol;
+		return *this;
+	}
+
+	HttpResponseBuilder& setProtocolVersion(int major, int minor) {
+		this->protocolVersionMajor = major;
+		this->protocolVersionMinor = minor;
+		return *this;
+	}
+
+	HttpResponseBuilder& setErrorCode(ErrorCode errorCode) {
+		this->errorCode = errorCode;
+		return *this;
+	}
+
+	HttpResponseBuilder& setServerName(const std::string& serverName) {
+		this->serverName = serverName;
+		return *this;
+	}
+
+	HttpResponseBuilder& setContentType(const std::string& contentType) {
+		this->contentType = contentType;
+		return *this;
+	}
+
+	HttpResponseBuilder& setConnection(ConnectionType connectionType) {
+		this->connectionType = connectionType;
+		return *this;
+	}
+
+	HttpResponseBuilder& build(const ByteBuffer& content = ByteBuffer()) {
+		ByteBuffer protocolVersionCode = vxsnprintf(64, "%s/%d.%d %d %s\r\n",
+			this->protocol == Http ? "HTTP" : "",
+			protocolVersionMajor, protocolVersionMinor,
+			errorCode, errorCodeCommentMap[errorCode]
+		);
+
+		ByteBuffer serverName = vxsnprintf(128, "Server: %s\r\n", this->serverName.c_str());
+		ByteBuffer contentType = vxsnprintf(128, "Content-Type: %s\r\n", this->contentType.c_str());
+		ByteBuffer contentLength = vxsnprintf(64, "Content-Length: %d\r\n", contentLength.size());
+		ByteBuffer connection = vxsnprintf(64, "Connection: %s\r\n", this->connectionType == KeepAlive ? "keep-alive" : "close");
+
+		return *this;
+	}
+
+	void send(Connection* connection) {
+		connection->sendData(buffer);
+	}
+
+	Protocol protocol;
+	int protocolVersionMajor;
+	int protocolVersionMinor;
+	ErrorCode errorCode;
+	std::string serverName;
+	std::string contentType;
+	ConnectionType connectionType;
+
+	std::vector<char> buffer;
+};
+
+HttpResponseBuilder::ErrorCodeCommentMap HttpResponseBuilder::errorCodeCommentMap = CreateMap<HttpResponseBuilder::ErrorCode, const char*>
+		(HttpResponseBuilder::OK_200, "Ok")
+		(HttpResponseBuilder::NotFound_404, "Not Found")
+		(HttpResponseBuilder::NotImplemented_501, "Not Implemented")
+;
+
 class WebServer : public ConnectionHandler {
 public:
-    typedef std::map<std::string, RequestHandler*> RequestMap;
+    typedef std::map<Request, RequestHandler*> RequestMap;
+
+	enum ErrorCode {
+		NotFound_404,
+
+		NotImplemented_501,
+	};
+
+	static std::map<ErrorCode, const char*> errors;
 
 	WebServer(uint16_t port = 8080) :
 			_socket(new ServerSocket(port, this))
 	{
 		_extToFileType.insert(std::make_pair("html", "text/html"));
 		_extToFileType.insert(std::make_pair("js", "text/javascript"));
+		_extToFileType.insert(std::make_pair("css", "text/css"));
 		_extToFileType.insert(std::make_pair("ico", "image/x-icon"));
 		_extToFileType.insert(std::make_pair("png", "image/png"));
 	}
@@ -502,9 +751,9 @@ public:
         return _filesDirectory;
     }
 
-    WebServer *addRequest(const std::string &requestString, RequestHandler *requestHandler) {
+    WebServer *addRequest(const Request &request, RequestHandler *requestHandler) {
         requestHandler->setWebServer(this);
-        _requestHandlers.insert(std::make_pair(requestString, requestHandler));
+        _requestHandlers.insert(std::make_pair(request, requestHandler));
         return this;
     }
 
@@ -515,31 +764,48 @@ public:
 
         std::stringstream ss(data.data());
 
-        std::string method;
-        std::string request;
+        std::string methodStr;
+        std::string requestStr;
 
-        ss >> method;
-        ss >> request;
+        ss >> methodStr;
+        ss >> requestStr;
 
-        if (checkAndResponseFile(request, connection))
-            return true;
+		printf("%s: %s\n", methodStr.c_str(), requestStr.c_str());
+		const Request& request = Request(methodStr, requestStr);
 
-        RequestMap::iterator it = _requestHandlers.find(request);
-        if (it == _requestHandlers.end())
-            return false;
+		if (checkAndResponseFile(request, connection))
+			return true;
 
-		Response response = it->second->getResponse();
+		std::cout << request << std::endl;
+
+		RequestMap::iterator it = _requestHandlers.find(request);
+		if (it == _requestHandlers.end() && (request.method & it->first.method))
+		{
+			const char* NOT_IMPLEMENTED =
+				"Http/1.1 501 OK\r\n"
+				"Server: ShnaiderServer/2017-01-01\r\n"
+				"Content-Type: application/json\r\n"
+				"Content-Length: 0\r\n"
+				"Connection: keep-alive\r\n"
+				"\r\n"
+				"\r\n"
+			;
+			connection->sendData(NOT_IMPLEMENTED);
+			return false;
+		}
+
+		Response response = it->second->getResponse(request);
 
 		return response.valid ? connection->sendData(response.data) : false;
     }
 
-    bool checkAndResponseFile(const std::string &request, Connection *connection) {
+    bool checkAndResponseFile(const Request &request, Connection *connection) {
         if (getDirectory().empty())
             return false;
 
-        FileHandler fileHandler(request);
+        FileHandler fileHandler(request.request);
         fileHandler.setWebServer(this);
-        Response response = fileHandler.getResponse();
+        Response response = fileHandler.getResponse(request);
         if (response.valid) {
             connection->sendData(response.data);
 			return true;
@@ -568,12 +834,34 @@ private:
     Ptr<ServerSocket> _socket;
     RequestMap _requestHandlers;
     std::string _filesDirectory;
-    std::map<std::string, std::string> _extToFileType;
+
+	std::map<std::string, std::string> _extToFileType;
 };
 
-Response FileHandler::getResponse() {
+std::map<WebServer::ErrorCode, const char*> WebServer::errors = CreateMap<WebServer::ErrorCode, const char*>
+	(WebServer::NotFound_404,
+		"Http/1.1 404 OK\r\n"
+		"Server: ShnaiderServer/2017-01-01\r\n"
+		"Content-Type: application/json\r\n"
+		"Content-Length: 0\r\n"
+		"Connection: keep-alive\r\n"
+		"\r\n"
+		"\r\n")
+	(WebServer::NotImplemented_501,
+		"Http/1.1 501 OK\r\n"
+		"Server: ShnaiderServer/2017-01-01\r\n"
+		"Content-Type: application/json\r\n"
+		"Content-Length: 0\r\n"
+		"Connection: keep-alive\r\n"
+		"\r\n"
+		"\r\n"
+	);
+
+
+Response FileHandler::getResponse(const Request& request)
+{
 	const char* answer_template =
-		"HTTP/1.1 200 OK\r\n"
+		"Http/1.1 200 OK\r\n"
 		"Server: ShnaiderServer/2017-01-01\r\n"
 		"Content-Type: %s\r\n"
 		"Content-Length: %d\r\n"
@@ -638,7 +926,7 @@ void signal_handler(int) {
     pthread_mutex_unlock(&mutex);
 }
 
-Response stopProgramRequest() {
+Response stopProgramRequest(const Params&) {
     programWork = false;
     signal_handler(0);
     return Response();
@@ -653,10 +941,10 @@ int main() {
 
         Ptr<WebServer> ws((new WebServer(9001))
             ->setDirectory("static")
-            ->addRequest("/", new FileHandler("index.html"))
-            ->addRequest("/test_json", new JsonHandler("{\"test\": 42}"))
-            ->addRequest("/quit", new FunctionHandler(stopProgramRequest))
-            ->addRequest("/update_log", new JsonHandler("{\"log\": \"Log text\"}"))
+            ->addRequest(Request(Request::ALL, "/"            ), new FileHandler("index.html"))
+            ->addRequest(Request(Request::ALL, "/test_json"   ), new JsonHandler("{\"test\": 42}"))
+            ->addRequest(Request(Request::ALL, "/quit"        ), new FunctionHandler(stopProgramRequest))
+            ->addRequest(Request(Request::ALL, "/update_log"  ), new JsonHandler("{\"log\": \"Log text\"}"))
         );
 
         pthread_mutex_lock(&mutex);

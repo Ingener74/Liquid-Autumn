@@ -3,27 +3,43 @@
 <head>
     <title>Debug Web Server</title>
     <meta charset="utf-8">
+
+    <!-- Bootstrap -->
+    <link href="css/bootstrap.min.css" rel="stylesheet">
 </head>
 <body>
-<div>
-    <button id="selectGame1Btn">Select game 1</button>
-    <p id="selectGame1Result">Result: </p>
-</div>
-<div>
-    <button id="quitBtn">Quit program</button>
-</div>
-<div>
-    <a href="second.html">Second page</a>
-</div>
-<div>
-    <p id="log">Log output</p>
+
+<div class="panel panel-success">
+    <div class="panel-heading">Debug Web Server</div>
+    <div class="panel-body">
+        <div>
+            <button id="selectGame1Btn" class="btn btn-info">Select game 1</button>
+            <p id="selectGame1Result">Result: </p>
+        </div>
+
+        <div class="panel panel-default">
+            <button id="makePost" class="btn btn-default">Make POST</button>
+            <button id="makeGet" class="btn btn-default">Make GET</button>
+        </div>
+
+        <div>
+            <button id="quitBtn" class="btn btn-danger">Quit program</button>
+        </div>
+        <div>
+            <a href="second.html">Second page</a>
+        </div>
+        <div>
+            <p id="log">Log output</p>
+        </div>
+
+        <div>
+            <img src="img/img.png" alt="">
+        </div>
+    </div>
 </div>
 
-<div>
-    <img src="img.png" alt="">
-</div>
-
-<script src="jquery-3.2.1.min.js"></script>
-<script src="test.js"></script>
+<script src="js/jquery-3.2.1.min.js"></script>
+<script src="js/bootstrap.min.js"></script>
+<script src="js/test.js"></script>
 </body>
 </html>
