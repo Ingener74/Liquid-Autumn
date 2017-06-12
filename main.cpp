@@ -30,43 +30,48 @@ typedef std::map<std::string, std::string> Params;
 typedef std::vector<char> ByteBuffer;
 
 ByteBuffer vxsnprintf(size_t maxlen, const char* format, ...) {
-	std::vector<char> buffer(maxlen);
-	va_list args;
-	va_start(args, format);
-	vsnprintf(buffer.data(), maxlen, format, args);
-	va_end(args);
-	return buffer;
+    std::vector<char> buffer(maxlen);
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buffer.data(), maxlen, format, args);
+    va_end(args);
+    return buffer;
 }
 
 std::string xsnprintf(size_t maxlen, const char* format, ...) {
-	va_list args;
-	va_start(args, format);
-	std::vector<char> buffer = vxsnprintf(maxlen, format, args);
-	va_end(args);
-	return std::string(buffer.data());
+    va_list args;
+    va_start(args, format);
+    std::vector<char> buffer = vxsnprintf(maxlen, format, args);
+    va_end(args);
+    return std::string(buffer.data());
+}
+
+std::vector<std::string> splitString(const std::string& string, char delim) {
+    std::stringstream stream(string);
+    std::string token;
+    std::vector<std::string> tokens;
+    while (getline(stream, token, delim))
+        tokens.push_back(token);
+    return tokens;
 }
 
 template <typename K, typename V>
-class CreateMap
-{
+class CreateMap {
 private:
-	std::map<K, V> map;
+    std::map<K, V> map;
 public:
-	CreateMap(const K& key, const V& val)
-	{
-		map[key] = val;
-	}
+    CreateMap(const K& key, const V& val) {
+        map[key] = val;
+    }
 
-	CreateMap<K, V>& operator()(const K& key, const V& val)
-	{
-		map[key] = val;
-		return *this;
-	}
+    CreateMap<K, V>& operator()(const K& key, const V& val) {
+        map[key] = val;
+        return *this;
+    }
 
-	operator std::map<K, V>()
-	{
-		return map;
-	}
+    operator std::map<K, V>() {
+        return map;
+    }
 };
 
 template<typename T>
@@ -79,287 +84,285 @@ private:
 	T* t;
 };
 
+class BinaryStreamBuffer : public std::streambuf {
+public:
+    BinaryStreamBuffer() :
+            buffer(1 << 12) {
+        setp(buffer.data(), buffer.data() + buffer.size());
+    }
+
+    virtual ~BinaryStreamBuffer() {
+    }
+
+    virtual int_type overflow(int_type c = traits_type::eof()) {
+        size_t pos = buffer.size();
+        buffer.resize(buffer.size() << 1);
+        setp(buffer.data(), buffer.data() + buffer.size());
+        pbump(pos);
+        *pptr() = c;
+        pbump(1);
+        return traits_type::not_eof(c);
+    }
+
+    std::vector<char> buffer;
+};
+
 class IoHandler {
 public:
-	virtual void handleRead() {}
-	virtual void handleWrite() {}
+    virtual void handleRead() {}
+
+    virtual void handleWrite() {}
 };
 
 class Io {
 public:
-	typedef std::map<int, IoHandler*> HandlersMap;
+    typedef std::map<int, IoHandler*> HandlersMap;
 
-	Io() {}
+    Io() {}
 
-	void wait() {
-		int nfds = 0;
+    void wait() {
+        int nfds = 0;
 
-		fd_set read_fds;
-		fd_set write_fds;
+        fd_set read_fds;
+        fd_set write_fds;
 
-		FD_ZERO(&read_fds);
-		FD_ZERO(&write_fds);
+        FD_ZERO(&read_fds);
+        FD_ZERO(&write_fds);
 
-		for (HandlersMap::iterator handlerIt = _readHandlers.begin(); handlerIt != _readHandlers.end(); ++handlerIt) {
-			FD_SET(handlerIt->first, &read_fds);
-			nfds = std::max(nfds, handlerIt->first);
-		}
-		for (HandlersMap::iterator handlerIt = _writeHandlers.begin(); handlerIt != _writeHandlers.end(); ++handlerIt) {
-			FD_SET(handlerIt->first, &write_fds);
-			nfds = std::max(nfds, handlerIt->first);
-		}
+        for (HandlersMap::iterator handlerIt = _readHandlers.begin(); handlerIt != _readHandlers.end(); ++handlerIt) {
+            FD_SET(handlerIt->first, &read_fds);
+            nfds = std::max(nfds, handlerIt->first);
+        }
+        for (HandlersMap::iterator handlerIt = _writeHandlers.begin(); handlerIt != _writeHandlers.end(); ++handlerIt) {
+            FD_SET(handlerIt->first, &write_fds);
+            nfds = std::max(nfds, handlerIt->first);
+        }
 
-		if (select(nfds + 1, &read_fds, &write_fds, NULL, NULL) <= 0)
-			return;
+        if (select(nfds + 1, &read_fds, &write_fds, NULL, NULL) <= 0)
+            return;
 
-		for (int i = 0; i <= nfds; ++i)
-		{
-			if (FD_ISSET(i, &read_fds))
-			{
-				for (HandlersMap::iterator handlerIt = _readHandlers.begin(); handlerIt != _readHandlers.end(); ++handlerIt)
-				{
-					if (handlerIt->first != i) continue;
-					handlerIt->second->handleRead();
-				}
-			}
-			else if(FD_ISSET(i, &write_fds))
-			{
-				for (HandlersMap::iterator handlerIt = _writeHandlers.begin(); handlerIt != _writeHandlers.end(); ++handlerIt)
-				{
-					if (handlerIt->first != i) continue;
-					handlerIt->second->handleWrite();
-				}
-			}
-		}
-	}
+        for (int i = 0; i <= nfds; ++i) {
+            if (FD_ISSET(i, &read_fds)) {
+                for (HandlersMap::iterator handlerIt = _readHandlers.begin();
+                     handlerIt != _readHandlers.end(); ++handlerIt) {
+                    if (handlerIt->first != i) continue;
+                    handlerIt->second->handleRead();
+                }
+            } else if (FD_ISSET(i, &write_fds)) {
+                for (HandlersMap::iterator handlerIt = _writeHandlers.begin();
+                     handlerIt != _writeHandlers.end(); ++handlerIt) {
+                    if (handlerIt->first != i) continue;
+                    handlerIt->second->handleWrite();
+                }
+            }
+        }
+    }
 
-	Io* addHandlers(int fd, IoHandler* readHandler, IoHandler* writeHandler)
-	{
-		if (readHandler)
-			_readHandlers.insert(std::make_pair(fd, readHandler));
-		if (writeHandler)
-			_writeHandlers.insert(std::make_pair(fd, writeHandler));
-		return this;
-	}
+    Io* addHandlers(int fd, IoHandler* readHandler, IoHandler* writeHandler) {
+        if (readHandler)
+            _readHandlers.insert(std::make_pair(fd, readHandler));
+        if (writeHandler)
+            _writeHandlers.insert(std::make_pair(fd, writeHandler));
+        return this;
+    }
 
-	Io* removeHandlers(int fd) {
-		HandlersMap::iterator readHandlerIt = _readHandlers.find(fd);
-		if(readHandlerIt != _readHandlers.end())
-		{
-			_readHandlers.erase(readHandlerIt);
-		}
-		HandlersMap::iterator writeHandlerIt = _writeHandlers.find(fd);
-		if(writeHandlerIt != _writeHandlers.end())
-		{
-			_writeHandlers.erase(writeHandlerIt);
-		}
-		return this;
-	}
+    Io* removeHandlers(int fd) {
+        HandlersMap::iterator readHandlerIt = _readHandlers.find(fd);
+        if (readHandlerIt != _readHandlers.end()) {
+            _readHandlers.erase(readHandlerIt);
+        }
+        HandlersMap::iterator writeHandlerIt = _writeHandlers.find(fd);
+        if (writeHandlerIt != _writeHandlers.end()) {
+            _writeHandlers.erase(writeHandlerIt);
+        }
+        return this;
+    }
 
 private:
-	HandlersMap _readHandlers;
-	HandlersMap _writeHandlers;
+    HandlersMap _readHandlers;
+    HandlersMap _writeHandlers;
 };
 
 
 class ConnectionHandler {
 public:
-	virtual ~ConnectionHandler() {
-	}
+    virtual ~ConnectionHandler() {
+    }
 
-	virtual bool handleRead(const std::vector<char>& data, Connection* connection) = 0;
+    virtual bool handleRead(const std::vector<char>& data, Connection* connection) = 0;
 };
 
-class Connection: public IoHandler {
+class Connection : public IoHandler {
 public:
-	Connection(int fd, ConnectionHandler* connectionHandler, ConnectionListener* connectionListener)
-			: fd(fd), connectionHandler(connectionHandler), connectionListener(connectionListener)
-	{}
+    Connection(int fd, ConnectionHandler* connectionHandler, ConnectionListener* connectionListener)
+            : fd(fd), connectionHandler(connectionHandler), connectionListener(connectionListener) {}
 
-	virtual ~Connection()
-	{
-		::shutdown(fd, SHUT_RDWR);
-		close(fd);
-	}
+    virtual ~Connection() {
+        ::shutdown(fd, SHUT_RDWR);
+        close(fd);
+    }
 
-	virtual void handleRead();
+    virtual void handleRead();
 
-	bool sendData(const std::vector<char> &data) {
-		return sendData(data.data(), data.size());
-	}
+    bool sendData(const std::vector<char>& data) {
+        return sendData(data.data(), data.size());
+    }
 
-	bool sendData(const std::string &data) {
-		return sendData(data.data(), data.size());
-	}
+    bool sendData(const std::string& data) {
+        return sendData(data.data(), data.size());
+    }
 
-	bool sendData(const char *data, size_t size) {
-		int summaryBytesSended = 0;
-		do {
-			char *ptr = const_cast<char *>(data) + summaryBytesSended;
-			size_t balance = size - summaryBytesSended;
+    bool sendData(const char* data, size_t size) {
+        int summaryBytesSended = 0;
+        do {
+            char* ptr = const_cast<char*>(data) + summaryBytesSended;
+            size_t balance = size - summaryBytesSended;
 
-			ssize_t bytesSended = send(fd, ptr, balance, MSG_NOSIGNAL);
+            ssize_t bytesSended = send(fd, ptr, balance, MSG_NOSIGNAL);
 
-			summaryBytesSended += bytesSended;
-		} while (summaryBytesSended < size);
-		return true;
-	}
+            summaryBytesSended += bytesSended;
+        } while (summaryBytesSended < size);
+        return true;
+    }
 
-	int fd;
-	ConnectionHandler* connectionHandler;
-	ConnectionListener* connectionListener;
+    int fd;
+    ConnectionHandler* connectionHandler;
+    ConnectionListener* connectionListener;
 };
 
 class ConnectionListener: public IoHandler {
 public:
-	ConnectionListener(uint16_t port, Io* io, ConnectionHandler* connectionHandler) : io(io), connectionHandler(connectionHandler)
-	{
-		sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-		if (sock < 0) throw std::runtime_error(xsnprintf(64, "create socket error: %s\n", strerror(errno)));
+    ConnectionListener(uint16_t port, Io* io, ConnectionHandler* connectionHandler)
+            : io(io), connectionHandler(connectionHandler) {
+        sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+        if (sock < 0) throw std::runtime_error(xsnprintf(64, "create socket error: %s\n", strerror(errno)));
 
-		sockaddr_in address;
-		memset(&address, 0, sizeof(address));
-		address.sin_family = AF_INET;
-		address.sin_addr.s_addr = htonl(INADDR_ANY);
+        sockaddr_in address;
+        memset(&address, 0, sizeof(address));
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_ANY);
 
-		while (true) {
-			address.sin_port = htons(port);
+        while (true) {
+            address.sin_port = htons(port);
 
-			int bindResult = bind(sock, reinterpret_cast<sockaddr *>(&address), sizeof(address));
-			if (bindResult < 0) {
-				printf("bind socket error: %s\n", strerror(errno));
-				port++;
-				continue;
-			} else {
-				printf("bind socket success: %d\n", port);
-				printf("http://127.0.0.1:%d\n", port);
-				break;
-			}
-		}
+            if (bind(sock, reinterpret_cast<sockaddr*>(&address), sizeof(address)) < 0) {
+                printf("bind socket error: %s\n", strerror(errno));
+                port++;
+                continue;
+            } else {
+                printf("bind socket success: %d\n", port);
+                printf("http://127.0.0.1:%d\n", port);
+                break;
+            }
+        }
 
-		int listenResult = listen(sock, 32);
-		if (listenResult < 0) throw std::runtime_error(xsnprintf(64, "listen socket error: %s\n", strerror(errno)));
+        if (listen(sock, 32) < 0) throw std::runtime_error(xsnprintf(64, "listen socket error: %s\n", strerror(errno)));
 
-		io->addHandlers(sock, this, NULL);
-	}
+        io->addHandlers(sock, this, NULL);
+    }
 
-	virtual ~ConnectionListener()
-	{
-		for (Connections::iterator it = connections.begin(); it != connections.end(); ++it) {
-			delete (*it);
-		}
+    virtual ~ConnectionListener() {
+        for (Connections::iterator it = connections.begin(); it != connections.end(); ++it) {
+            delete (*it);
+        }
         ::shutdown(sock, SHUT_RDWR);
         close(sock);
-	}
+    }
 
-	virtual void handleRead()
-	{
-		int fd = accept(sock, NULL, NULL);
-		Connection* connection = new Connection(fd, connectionHandler, this);
-		connections.push_back(connection);
-		io->addHandlers(fd, connection, NULL);
-	}
+    virtual void handleRead() {
+        int fd = accept(sock, NULL, NULL);
+        Connection* connection = new Connection(fd, connectionHandler, this);
+        connections.push_back(connection);
+        io->addHandlers(fd, connection, NULL);
+    }
 
-	void remoteConnection(Connection* connection) {
-		Connections::iterator connectionIt = std::find(connections.begin(), connections.end(), connection);
-		if (connectionIt != connections.end()) {
-			io->removeHandlers((*connectionIt)->fd);
-			delete (*connectionIt);
-			connections.erase(connectionIt);
-		}
-	}
+    void remoteConnection(Connection* connection) {
+        Connections::iterator connectionIt = std::find(connections.begin(), connections.end(), connection);
+        if (connectionIt != connections.end()) {
+            io->removeHandlers((*connectionIt)->fd);
+            delete (*connectionIt);
+            connections.erase(connectionIt);
+        }
+    }
 
-	Io* io;
-	int sock;
-	ConnectionHandler* connectionHandler;
-	Connections connections;
+    Io* io;
+    int sock;
+    ConnectionHandler* connectionHandler;
+    Connections connections;
 };
 
-void Connection::handleRead()
-{
-	size_t buffer_size = 4096;
+void Connection::handleRead() {
+    size_t buffer_size = 4096;
 
-	std::vector<char> buffer;
-	buffer.resize(buffer_size);
+    std::vector<char> buffer;
+    buffer.resize(buffer_size);
 
-	ssize_t bytesReceived = recv(fd, buffer.data(), buffer.size(), 0);
+    ssize_t bytesReceived = recv(fd, buffer.data(), buffer.size(), 0);
 
-	if (bytesReceived == 0)
-	{
-		::shutdown(fd, SHUT_RDWR);
-		close(fd);
-
-		connectionListener->remoteConnection(this);
-	}
-	else if (bytesReceived < buffer_size)
-	{
-		if (!connectionHandler->handleRead(buffer, this))
-		{
-			printf("warning: handleRead fail\n");
-		}
-	}
-	else if (bytesReceived == buffer_size)
-	{
-		printf("warning: receive buffer overflow\n");
-	}
-	else if (bytesReceived < 0)
-	{
-		throw std::runtime_error(xsnprintf(64, "recv error: %s", strerror(errno)));
-	}
+    if (bytesReceived == 0) {
+        ::shutdown(fd, SHUT_RDWR);
+        close(fd);
+        connectionListener->remoteConnection(this);
+    } else if (bytesReceived < buffer_size) {
+        if (!connectionHandler->handleRead(buffer, this)) {
+            printf("warning: handleRead fail\n");
+        }
+    } else if (bytesReceived == buffer_size) {
+        printf("warning: receive buffer overflow\n");
+    } else if (bytesReceived < 0) {
+        throw std::runtime_error(xsnprintf(64, "recv error: %s", strerror(errno)));
+    }
 }
 
-class Pipes: public IoHandler {
+class Pipes : public IoHandler {
 public:
-	Pipes(Io* io, bool* work) : work(work)
-	{
-		if (pipe(pfds) < 0) throw std::runtime_error(xsnprintf(64, "can't create pipes: %s\n", strerror(errno)));
+    Pipes(Io* io, bool* work) : work(work) {
+        if (pipe(pfds) < 0) throw std::runtime_error(xsnprintf(64, "can't create pipes: %s\n", strerror(errno)));
 
-		int flags = 0;
+        int flags = 0;
 
-		flags = fcntl(pfds[0], F_GETFL);
-		if (flags < 0) throw std::runtime_error(xsnprintf(64, "can't get pipe flags: %s\n", strerror(errno)));
+        flags = fcntl(pfds[0], F_GETFL);
+        if (flags < 0) throw std::runtime_error(xsnprintf(64, "can't get pipe flags: %s\n", strerror(errno)));
 
-		flags |= O_NONBLOCK;
-		if (fcntl(pfds[0], F_SETFL, flags) < 0) throw std::runtime_error(xsnprintf(64, "can't set pipe flags: %s\n", strerror(errno)));
+        flags |= O_NONBLOCK;
+        if (fcntl(pfds[0], F_SETFL, flags) < 0)
+            throw std::runtime_error(xsnprintf(64, "can't set pipe flags: %s\n", strerror(errno)));
 
-		flags = fcntl(pfds[1], F_GETFL);
-		if (flags < 0) throw std::runtime_error(xsnprintf(64, "can't get pipe flags: %s\n", strerror(errno)));
+        flags = fcntl(pfds[1], F_GETFL);
+        if (flags < 0) throw std::runtime_error(xsnprintf(64, "can't get pipe flags: %s\n", strerror(errno)));
 
-		flags |= O_NONBLOCK;
-		if (fcntl(pfds[1], F_SETFL, flags) < 0) throw std::runtime_error(xsnprintf(64, "can't set pipe flags: %s\n", strerror(errno)));
+        flags |= O_NONBLOCK;
+        if (fcntl(pfds[1], F_SETFL, flags) < 0)
+            throw std::runtime_error(xsnprintf(64, "can't set pipe flags: %s\n", strerror(errno)));
 
-		io->addHandlers(pfds[0], this, NULL);
-	}
+        io->addHandlers(pfds[0], this, NULL);
+    }
 
-	virtual ~Pipes()
-	{
+    virtual ~Pipes() {
         close(pfds[0]);
         close(pfds[1]);
-	}
+    }
 
-	bool shutdown()
-	{
-		int savedErrno = errno;
-		bool result = write(pfds[1], "x", 1) < 0 && errno != EAGAIN;
-		errno = savedErrno;
-		return result;
-	}
+    bool shutdown() {
+        int savedErrno = errno;
+        bool result = write(pfds[1], "x", 1) < 0 && errno != EAGAIN;
+        errno = savedErrno;
+        return result;
+    }
 
-	virtual void handleRead()
-	{
-		if (work)
-			*work = false;
-	}
+    virtual void handleRead() {
+        if (work)
+            *work = false;
+    }
 
-	int pfds[2];
-	bool *work;
+    int pfds[2];
+    bool* work;
 };
 
 class ServerSocket {
 public:
     ServerSocket(uint16_t port, ConnectionHandler* connectionHandler) :
-			port(port), connectionHandler(connectionHandler)
-	{
+            port(port), connectionHandler(connectionHandler) {
         pthread_create(&thread, NULL, threadBody, this);
     }
 
@@ -368,31 +371,25 @@ public:
         pthread_join(thread, NULL);
     }
 
-    static void *threadBody(void *userData) {
-        ServerSocket *self = static_cast<ServerSocket *>(userData);
-		try
-		{
-			Io io;
-			ConnectionListener connectionListener(self->port, &io, self->connectionHandler);
+    static void* threadBody(void* userData) {
+        ServerSocket* self = static_cast<ServerSocket*>(userData);
+        try {
+            Io io;
+            ConnectionListener connectionListener(self->port, &io, self->connectionHandler);
 
-			bool work = true;
-			Pipes pipes(&io, &work);
-			self->pipes = &pipes;
+            bool work = true;
+            Pipes pipes(&io, &work);
+            self->pipes = &pipes;
 
-			while (work)
-				try
-				{
-					io.wait();
-				}
-				catch (std::runtime_error const& e)
-				{
-					printf("handleRead error: %s\n", e.what());
-				}
-		}
-		catch (std::exception const& e)
-		{
-			printf("error: %s\n", e.what());
-		}
+            while (work)
+                try {
+                    io.wait();
+                } catch (std::runtime_error const& e) {
+                    printf("handleRead error: %s\n", e.what());
+                }
+        } catch (std::exception const& e) {
+            printf("error: %s\n", e.what());
+        }
         return NULL;
     }
 
@@ -417,76 +414,76 @@ private:
 };
 
 struct Request {
-	enum Method {
-		GET       = 0x01,
-		POST      = 0x02,
-		INVALID   = 0xFF,
-		ALL       = GET | POST,
-	};
+    enum Method {
+        GET = 0x01,
+        POST = 0x02,
+        INVALID = 0xFF,
+        ALL = GET | POST,
+    };
 
-	Request(Method method = INVALID, const std::string& request = "") : method(method), request(request)
-	{}
+    Request(Method method = INVALID, const std::string& request = "")
+            : method(method), request(request) {
+    }
 
-	Request(const std::string& methodStr, const std::string& fullRequest)
-	{
-		method =
-				methodStr == "GET" ? Request::GET :
-				methodStr == "POST" ? Request::POST : Request::INVALID;
+    Request(const std::string& methodStr, const std::string& fullRequest) {
+        method =
+                methodStr == "GET" ? Request::GET :
+                methodStr == "POST" ? Request::POST : Request::INVALID;
 
-		std::string resRequest, resParams;
-		if (splitTwiceByChar(resRequest, resParams, fullRequest, '?')) {
-			this->request = resRequest;
+        std::string resRequest, resParams;
+        if (splitTwiceByChar(resRequest, resParams, fullRequest, '?')) {
+            this->request = resRequest;
 
-			std::vector<std::string> params;
-			splitParams(params, resParams);
-			splitParam(this->params, params);
-		} else {
-			this->request = fullRequest;
-		}
-	}
+            std::vector<std::string> params;
+            splitParams(params, resParams);
+            splitParam(this->params, params);
+        } else {
+            this->request = fullRequest;
+        }
+    }
 
-	static void splitParams(std::vector<std::string>& params, const std::string& fullParams) {
-		std::stringstream paramStream(fullParams);
-		std::string token;
-		while(getline(paramStream, token, '&'))
-			params.push_back(token);
-	}
+    static void splitParams(std::vector<std::string>& params, const std::string& fullParams) {
+        std::stringstream paramStream(fullParams);
+        std::string token;
+        while (getline(paramStream, token, '&'))
+            params.push_back(token);
+    }
 
-	static bool splitTwiceByChar(std::string& first, std::string& second, const std::string& str, char delim) {
-		std::stringstream stream(str);
-		std::string token;
-		std::vector<std::string> tokens;
-		while(getline(stream, token, delim))
-			tokens.push_back(token);
-		if (tokens.size() < 1 && tokens.size() > 2)
-			return false;
-		if (tokens.size() >= 1)
-			first = tokens.at(0);
-		if (tokens.size() >= 2)
-			second = tokens.at(1);
-		return true;
-	}
+    static bool splitTwiceByChar(std::string& first, std::string& second, const std::string& str, char delim) {
+        std::stringstream stream(str);
+        std::string token;
+        std::vector<std::string> tokens;
+        while (getline(stream, token, delim))
+            tokens.push_back(token);
+        if (tokens.size() < 1 && tokens.size() > 2)
+            return false;
+        if (tokens.size() >= 1)
+            first = tokens.at(0);
+        if (tokens.size() >= 2)
+            second = tokens.at(1);
+        return true;
+    }
 
-	static void splitParam(Params& params, const std::vector<std::string>& fullParams) {
-		for (std::vector<std::string>::const_iterator it = fullParams.begin(); it != fullParams.end(); ++it) {
-			std::string first, second;
-			if(splitTwiceByChar(first, second, *it, '='))
-				params.insert(std::make_pair(first, second));
-		}
-	}
+    static void splitParam(Params& params, const std::vector<std::string>& fullParams) {
+        for (std::vector<std::string>::const_iterator it = fullParams.begin(); it != fullParams.end(); ++it) {
+            std::string first, second;
+            if (splitTwiceByChar(first, second, *it, '='))
+                params.insert(std::make_pair(first, second));
+        }
+    }
 
-	operator bool() const {
-		return method != INVALID && !request.empty();
-	}
+    operator bool() const {
+        return method != INVALID && !request.empty();
+    }
 
-	friend bool operator<(const Request& lhs, const Request& rhs);
+    friend bool operator<(const Request& lhs, const Request& rhs);
 
-	friend std::ostream& operator<<(std::ostream& os, const Request& request);
+    friend std::ostream& operator<<(std::ostream& os, const Request& request);
 
-	Method method;
-	std::string request;
+    Method method;
+    std::string request;
 
-	Params params;
+    Params params;
 };
 
 bool operator<(const Request& lhs, const Request& rhs)
@@ -498,248 +495,286 @@ bool operator<(const Request& lhs, const Request& rhs)
 	return lhs.request < rhs.request;
 }
 
-std::ostream& operator<<(std::ostream& os, const Request& request)
-{
-	os << "method: " << request.method << ", request: " << request.request;
-	if (request.params.empty())
-		return os;
-	os << ", params: { ";
-	for (Params::const_iterator it = request.params.begin(); it != request.params.end(); ++it) {
-		os << "[" << it->first << ": " << it->second << "], ";
-	}
-	os << "}";
-	return os;
+std::ostream& operator<<(std::ostream& os, const Request& request) {
+    os << "method: " << request.method << ", request: " << request.request;
+    if (request.params.empty())
+        return os;
+    os << ", params: { ";
+    for (Params::const_iterator it = request.params.begin(); it != request.params.end(); ++it) {
+        os << "[" << it->first << ": " << it->second << "], ";
+    }
+    os << "}";
+    return os;
 }
 
 class Response {
 public:
-	Response(const std::vector<char>& data = std::vector<char>(), bool valid = false) : data(data), valid(valid) {}
+    Response(const std::vector<char>& data = std::vector<char>(), bool valid = false)
+            : data(data), valid(valid) {
+    }
 
-	std::vector<char> data;
-	bool valid;
+    std::vector<char> data;
+    bool valid;
 };
 
 class RequestHandler {
 public:
-	RequestHandler() : _webServer(NULL) {}
-	virtual ~RequestHandler() {}
+    RequestHandler() : _webServer(NULL) {}
 
-	virtual Response getResponse(const Request& request = Request()) = 0;
+    virtual ~RequestHandler() {}
 
-	WebServer *getWebServer() {
-		return _webServer;
-	}
+    virtual Response getResponse(const Request& request = Request()) = 0;
 
-	RequestHandler *setWebServer(WebServer *webServer) {
-		_webServer = webServer;
-		return this;
-	}
+    WebServer* getWebServer() {
+        return _webServer;
+    }
+
+    RequestHandler* setWebServer(WebServer* webServer) {
+        _webServer = webServer;
+        return this;
+    }
 
 protected:
-	WebServer *_webServer;
+    WebServer* _webServer;
 };
 
 class FileHandler : public RequestHandler {
-	std::string _fileName;
+    std::string _fileName;
 public:
-	FileHandler(const std::string &fileName) :
-			_fileName(fileName) {
-	}
+    FileHandler(const std::string& fileName) :
+            _fileName(fileName) {
+    }
 
-	virtual ~FileHandler() {
-	}
+    virtual ~FileHandler() {
+    }
 
-	virtual Response getResponse(const Request& request);
+    virtual Response getResponse(const Request& request);
 };
 
 class PageHandler : public RequestHandler {
-	std::string _page;
+    std::string _page;
 public:
-	PageHandler(const std::string &page = 0) : _page(page) {}
-	virtual ~PageHandler() {}
+    PageHandler(const std::string& page = 0) : _page(page) {}
 
-	virtual Response getResponse(const Request& request)
-	{
-		const char *answer_template =
-			"Http/1.1 200 OK\r\n"
-			"Server: ShnaiderServer/2017-01-01\r\n"
-			"Content-Type: text/html\r\n"
-			"Content-Length: %d\r\n"
-			"Connection: keep-alive\r\n"
-			"\r\n"
-			"%s"
-			"\r\n"
-		;
+    virtual ~PageHandler() {}
 
-		size_t size = strlen(answer_template) + _page.size() + 1024;
-		return Response(vxsnprintf(size, answer_template, _page.size(), _page.c_str()), true);
-	}
+    virtual Response getResponse(const Request& request) {
+        const char* answer_template =
+                "HTTP/1.1 200 OK\r\n"
+                "Server: ShnaiderServer/2017-01-01\r\n"
+                "Content-Type: text/html\r\n"
+                "Content-Length: %d\r\n"
+                "Connection: keep-alive\r\n"
+                "\r\n"
+                "%s"
+                "\r\n"
+        ;
+
+        size_t size = strlen(answer_template) + _page.size() + 1024;
+        return Response(vxsnprintf(size, answer_template, _page.size(), _page.c_str()), true);
+    }
 };
 
 class JsonHandler : public RequestHandler {
-	std::string _page;
+    std::string _page;
 public:
-	JsonHandler(const std::string& page) : _page(page) {}
-	virtual ~JsonHandler() {}
+    JsonHandler(const std::string& page) : _page(page) {}
 
-	virtual Response getResponse(const Request& request)
-	{
-		const char* answer_template =
-			"Http/1.1 200 OK\r\n"
-			"Server: ShnaiderServer/2017-01-01\r\n"
-			"Content-Type: application/json\r\n"
-			"Content-Length: %d\r\n"
-			"Connection: keep-alive\r\n"
-			"\r\n"
-			"%s"
-			"\r\n"
-		;
+    virtual ~JsonHandler() {}
 
-		size_t len = strlen(answer_template) + _page.size() + 1024;
-		return Response(vxsnprintf(len, answer_template, _page.size(), _page.c_str()), true);
-	}
+    virtual Response getResponse(const Request& request) {
+        const char* answer_template =
+                "HTTP/1.1 200 OK\r\n"
+                "Server: ShnaiderServer/2017-01-01\r\n"
+                "Content-Type: application/json\r\n"
+                "Content-Length: %d\r\n"
+                "Connection: keep-alive\r\n"
+                "\r\n"
+                "%s"
+                "\r\n"
+        ;
+
+        size_t len = strlen(answer_template) + _page.size() + 1024;
+        return Response(vxsnprintf(len, answer_template, _page.size(), _page.c_str()), true);
+    }
 };
 
 class FunctionHandler : public RequestHandler {
 public:
-	typedef Response (*handler_t)(const Params&);
+    typedef Response (* handler_t)(const Params&);
 
-	FunctionHandler(handler_t handler = 0) : handler(handler) {}
+    FunctionHandler(handler_t handler = 0) : handler(handler) {}
 
-	virtual Response getResponse(const Request& request)
-	{
-		return handler ? handler(request.params) : Response();
-	}
+    virtual Response getResponse(const Request& request) {
+        return handler ? handler(request.params) : Response();
+    }
 
 private:
-	handler_t handler;
+    handler_t handler;
 };
 
 class HttpResponseBuilder {
 public:
 
-	enum Protocol {
-		Http,
-		PROTOCOL_COUNT,
-	};
+    enum Protocol {
+        Http,
+        Protocol_Count,
+    };
 
-	enum ErrorCode {
-		OK_200                                   = 200,
-		NotFound_404                             = 404,
-		NotImplemented_501                       = 501,
-		ErrorCode_Count
-	};
+    enum ErrorCode {
+        OK_200 = 200,
+        NotFound_404 = 404,
+        NotImplemented_501 = 501,
+    };
 
-	enum ConnectionType {
-		KeepAlive, Close,
-	};
+    enum ConnectionType {
+        KeepAlive, Close,
+    };
 
-	typedef std::map<ErrorCode, const char*> ErrorCodeCommentMap;
-	static ErrorCodeCommentMap errorCodeCommentMap;
+    enum ContentType {
+        ContentType_Count,
+    };
 
-	HttpResponseBuilder()
-			: protocol(Http)
-			, protocolVersionMajor(1)
-			, protocolVersionMinor(1)
-			, errorCode(OK_200)
-			, serverName("ShnaiderServer/2017-01-01")
-			, contentType("")
-			, connectionType(KeepAlive)
-	{}
+    typedef std::map<ErrorCode, const char*> ErrorCodeCommentMap;
+    static ErrorCodeCommentMap errorCodeCommentMap;
 
-	HttpResponseBuilder& setProtocol(Protocol protocol) {
-		this->protocol = protocol;
-		return *this;
-	}
+    typedef std::map<std::string, std::string> ExtensionToContentType;
+    static ExtensionToContentType extensionToContentType;
 
-	HttpResponseBuilder& setProtocolVersion(int major, int minor) {
-		this->protocolVersionMajor = major;
-		this->protocolVersionMinor = minor;
-		return *this;
-	}
+    HttpResponseBuilder()
+            : protocol(Http)
+            , protocolVersionMajor(1)
+            , protocolVersionMinor(1)
+            , errorCode(OK_200)
+            , serverName("ShnaiderServer/2017-01-01")
+            , contentType("text/html")
+            , connectionType(KeepAlive)
+            , stream(&buffer)
+    {}
 
-	HttpResponseBuilder& setErrorCode(ErrorCode errorCode) {
-		this->errorCode = errorCode;
-		return *this;
-	}
+    HttpResponseBuilder& setProtocol(Protocol protocol) {
+        this->protocol = protocol;
+        return *this;
+    }
 
-	HttpResponseBuilder& setServerName(const std::string& serverName) {
-		this->serverName = serverName;
-		return *this;
-	}
+    HttpResponseBuilder& setProtocolVersion(int major, int minor) {
+        this->protocolVersionMajor = major;
+        this->protocolVersionMinor = minor;
+        return *this;
+    }
 
-	HttpResponseBuilder& setContentType(const std::string& contentType) {
-		this->contentType = contentType;
-		return *this;
-	}
+    HttpResponseBuilder& setErrorCode(ErrorCode errorCode) {
+        this->errorCode = errorCode;
+        return *this;
+    }
 
-	HttpResponseBuilder& setConnection(ConnectionType connectionType) {
-		this->connectionType = connectionType;
-		return *this;
-	}
+    HttpResponseBuilder& setServerName(const std::string& serverName) {
+        this->serverName = serverName;
+        return *this;
+    }
 
-	HttpResponseBuilder& build(const ByteBuffer& content = ByteBuffer()) {
-		ByteBuffer protocolVersionCode = vxsnprintf(64, "%s/%d.%d %d %s\r\n",
-			this->protocol == Http ? "HTTP" : "",
-			protocolVersionMajor, protocolVersionMinor,
-			errorCode, errorCodeCommentMap[errorCode]
-		);
+    HttpResponseBuilder& setContentType(const std::string& contentType) {
+        this->contentType = contentType;
+        return *this;
+    }
 
-		ByteBuffer serverName = vxsnprintf(128, "Server: %s\r\n", this->serverName.c_str());
-		ByteBuffer contentType = vxsnprintf(128, "Content-Type: %s\r\n", this->contentType.c_str());
-		ByteBuffer contentLength = vxsnprintf(64, "Content-Length: %d\r\n", contentLength.size());
-		ByteBuffer connection = vxsnprintf(64, "Connection: %s\r\n", this->connectionType == KeepAlive ? "keep-alive" : "close");
+    HttpResponseBuilder& setContentTypeByFileName(const std::string& fileName) {
+        contentType = getContentTypeForExtension(getExtension(fileName));
+        return *this;
+    }
 
-		return *this;
-	}
+    HttpResponseBuilder& setConnection(ConnectionType connectionType) {
+        this->connectionType = connectionType;
+        return *this;
+    }
 
-	void send(Connection* connection) {
-		connection->sendData(buffer);
-	}
+    HttpResponseBuilder& build(const ByteBuffer& content = ByteBuffer()) {
+        stream << (protocol == Http ? "HTTP" : "") << "/" << protocolVersionMajor << "." << protocolVersionMinor << " "
+               << errorCode << " " << errorCodeCommentMap[errorCode] << "\r\n";
 
-	Protocol protocol;
-	int protocolVersionMajor;
-	int protocolVersionMinor;
-	ErrorCode errorCode;
-	std::string serverName;
-	std::string contentType;
-	ConnectionType connectionType;
+        stream << "Server: " << serverName << "\r\n";
+        stream << "Content-Type: " << contentType << "\r\n";
+        stream << "Content-Length: " << content.size() << "\r\n";
+        stream << "Connection: " << (connectionType == KeepAlive ? "keep-alive" : "close") << "\r\n";
 
-	std::vector<char> buffer;
+        stream << "\r\n";
+        stream.write(content.data(), content.size());
+        stream << "\r\n";
+
+//        std::cout << buffer.buffer.data() << std::endl;
+        return *this;
+    }
+
+    void send(Connection* connection) {
+        connection->sendData(buffer.buffer);
+    }
+
+    static std::string getContentTypeForExtension(const std::string& extension) {
+        std::map<std::string, std::string>::const_iterator mimeTypeIt = extensionToContentType.find(extension);
+        return mimeTypeIt == extensionToContentType.end() ? "text/html" : mimeTypeIt->second;
+    }
+
+    static std::string getExtension(const std::string& request) {
+        std::vector<std::string> tokens = splitString(request, '.');
+        if (tokens.empty())
+            throw std::runtime_error("tokens are empty");
+        return tokens.back();
+    }
+
+    Protocol protocol;
+    int protocolVersionMajor;
+    int protocolVersionMinor;
+    ErrorCode errorCode;
+    std::string serverName;
+    std::string contentType;
+    ConnectionType connectionType;
+
+    BinaryStreamBuffer buffer;
+    std::ostream stream;
 };
 
-HttpResponseBuilder::ErrorCodeCommentMap HttpResponseBuilder::errorCodeCommentMap = CreateMap<HttpResponseBuilder::ErrorCode, const char*>
-		(HttpResponseBuilder::OK_200, "Ok")
-		(HttpResponseBuilder::NotFound_404, "Not Found")
-		(HttpResponseBuilder::NotImplemented_501, "Not Implemented")
+HttpResponseBuilder::ErrorCodeCommentMap HttpResponseBuilder::errorCodeCommentMap =
+    CreateMap<HttpResponseBuilder::ErrorCode, const char*>
+        (HttpResponseBuilder::OK_200, "Ok")
+        (HttpResponseBuilder::NotFound_404, "Not Found")
+        (HttpResponseBuilder::NotImplemented_501, "Not Implemented")
+;
+
+HttpResponseBuilder::ExtensionToContentType HttpResponseBuilder::extensionToContentType =
+    CreateMap<std::string, std::string>
+        ("html"    , "text/html"          )
+        ("js"      , "text/javascript"    )
+        ("css"     , "text/css"           )
+        ("ico"     , "image/x-icon"       )
+        ("png"     , "image/png"          )
 ;
 
 class WebServer : public ConnectionHandler {
 public:
     typedef std::map<Request, RequestHandler*> RequestMap;
 
-	enum ErrorCode {
-		NotFound_404,
+    enum ErrorCode {
+        NotFound_404,
 
-		NotImplemented_501,
-	};
+        NotImplemented_501,
+    };
 
-	static std::map<ErrorCode, const char*> errors;
+    static std::map<ErrorCode, const char*> errors;
 
-	WebServer(uint16_t port = 8080) :
-			_socket(new ServerSocket(port, this))
-	{
-		_extToFileType.insert(std::make_pair("html", "text/html"));
-		_extToFileType.insert(std::make_pair("js", "text/javascript"));
-		_extToFileType.insert(std::make_pair("css", "text/css"));
-		_extToFileType.insert(std::make_pair("ico", "image/x-icon"));
-		_extToFileType.insert(std::make_pair("png", "image/png"));
-	}
+    WebServer(uint16_t port = 8080) :
+            _socket(new ServerSocket(port, this)) {
+        _extToFileType.insert(std::make_pair("html", "text/html"));
+        _extToFileType.insert(std::make_pair("js", "text/javascript"));
+        _extToFileType.insert(std::make_pair("css", "text/css"));
+        _extToFileType.insert(std::make_pair("ico", "image/x-icon"));
+        _extToFileType.insert(std::make_pair("png", "image/png"));
+    }
 
     ~WebServer() {
-		for (RequestMap::iterator requestIt = _requestHandlers.begin(); requestIt != _requestHandlers.end(); ++requestIt) {
-			delete requestIt->second;
-		}
+        for (RequestMap::iterator requestIt = _requestHandlers.begin();
+             requestIt != _requestHandlers.end(); ++requestIt) {
+            delete requestIt->second;
+        }
     }
 
     WebServer *setDirectory(const std::string &filesDirectory) {
@@ -757,8 +792,7 @@ public:
         return this;
     }
 
-    bool handleRead(const std::vector<char>& data, Connection* connection)
-	{
+    bool handleRead(const std::vector<char>& data, Connection* connection) {
         if (data.empty())
             return false;
 
@@ -770,36 +804,29 @@ public:
         ss >> methodStr;
         ss >> requestStr;
 
-		printf("%s: %s\n", methodStr.c_str(), requestStr.c_str());
-		const Request& request = Request(methodStr, requestStr);
+        printf("%s: %s\n", methodStr.c_str(), requestStr.c_str());
+        const Request& request = Request(methodStr, requestStr);
 
-		if (checkAndResponseFile(request, connection))
-			return true;
+        if (checkAndResponseFile(request, connection))
+            return true;
 
-		std::cout << request << std::endl;
+        std::cout << request << std::endl;
 
-		RequestMap::iterator it = _requestHandlers.find(request);
-		if (it == _requestHandlers.end() && (request.method & it->first.method))
-		{
-			const char* NOT_IMPLEMENTED =
-				"Http/1.1 501 OK\r\n"
-				"Server: ShnaiderServer/2017-01-01\r\n"
-				"Content-Type: application/json\r\n"
-				"Content-Length: 0\r\n"
-				"Connection: keep-alive\r\n"
-				"\r\n"
-				"\r\n"
-			;
-			connection->sendData(NOT_IMPLEMENTED);
-			return false;
-		}
+        RequestMap::iterator it = _requestHandlers.find(request);
+        if (it == _requestHandlers.end()/* && (request.method & it->first.method)*/) {
+            HttpResponseBuilder().
+                    setErrorCode(HttpResponseBuilder::NotImplemented_501).
+                    build().
+                    send(connection);
+            return false;
+        }
 
-		Response response = it->second->getResponse(request);
+        Response response = it->second->getResponse(request);
 
-		return response.valid ? connection->sendData(response.data) : false;
+        return response.valid ? connection->sendData(response.data) : false;
     }
 
-    bool checkAndResponseFile(const Request &request, Connection *connection) {
+    bool checkAndResponseFile(const Request& request, Connection* connection) {
         if (getDirectory().empty())
             return false;
 
@@ -808,9 +835,9 @@ public:
         Response response = fileHandler.getResponse(request);
         if (response.valid) {
             connection->sendData(response.data);
-			return true;
+            return true;
         }
-		return false;
+        return false;
     }
 
     std::string getMimeTypeForExtension(const std::string &extension) const {
@@ -840,7 +867,7 @@ private:
 
 std::map<WebServer::ErrorCode, const char*> WebServer::errors = CreateMap<WebServer::ErrorCode, const char*>
 	(WebServer::NotFound_404,
-		"Http/1.1 404 OK\r\n"
+		"HTTP/1.1 404 OK\r\n"
 		"Server: ShnaiderServer/2017-01-01\r\n"
 		"Content-Type: application/json\r\n"
 		"Content-Length: 0\r\n"
@@ -848,7 +875,7 @@ std::map<WebServer::ErrorCode, const char*> WebServer::errors = CreateMap<WebSer
 		"\r\n"
 		"\r\n")
 	(WebServer::NotImplemented_501,
-		"Http/1.1 501 OK\r\n"
+		"HTTP/1.1 501 OK\r\n"
 		"Server: ShnaiderServer/2017-01-01\r\n"
 		"Content-Type: application/json\r\n"
 		"Content-Length: 0\r\n"
@@ -858,61 +885,60 @@ std::map<WebServer::ErrorCode, const char*> WebServer::errors = CreateMap<WebSer
 	);
 
 
-Response FileHandler::getResponse(const Request& request)
-{
-	const char* answer_template =
-		"Http/1.1 200 OK\r\n"
-		"Server: ShnaiderServer/2017-01-01\r\n"
-		"Content-Type: %s\r\n"
-		"Content-Length: %d\r\n"
-		"Connection: keep-alive\r\n"
-		"\r\n";
+Response FileHandler::getResponse(const Request& request) {
+    const char* answer_template =
+        "HTTP/1.1 200 OK\r\n"
+        "Server: ShnaiderServer/2017-01-01\r\n"
+        "Content-Type: %s\r\n"
+        "Content-Length: %d\r\n"
+        "Connection: keep-alive\r\n"
+        "\r\n";
 
-	std::vector<char> response;
+    std::vector<char> response;
 
-	std::string sep;
-	if (_fileName.at(0) != '/')
-		sep = "/";
+    std::string sep;
+    if (_fileName.at(0) != '/')
+        sep = "/";
 
-	std::string filename = _webServer->getDirectory() + sep + _fileName;
+    std::string filename = _webServer->getDirectory() + sep + _fileName;
 
-	struct stat path;
-	stat(filename.c_str(), &path);
-	if (!S_ISREG(path.st_mode)) {
-		return Response();
-	}
+    struct stat path;
+    stat(filename.c_str(), &path);
+    if (!S_ISREG(path.st_mode)) {
+        return Response();
+    }
 
-	FILE* file = fopen(filename.c_str(), "rb");
+    FILE* file = fopen(filename.c_str(), "rb");
 
-	if (file) {
-		fseek(file, 0, SEEK_END);
-		long size = ftell(file);
-		rewind(file);
+    if (file) {
+        fseek(file, 0, SEEK_END);
+        long size = ftell(file);
+        rewind(file);
 
-		std::string extension = _webServer->getExtension(_fileName);
-		std::string mimeType = _webServer->getMimeTypeForExtension(extension);
+        std::string extension = _webServer->getExtension(_fileName);
+        std::string mimeType = _webServer->getMimeTypeForExtension(extension);
 
-		response.resize(strlen(answer_template) + size + 1024);
-		snprintf(response.data(), response.size(), answer_template, mimeType.c_str(), size);
+        response.resize(strlen(answer_template) + size + 1024);
+        snprintf(response.data(), response.size(), answer_template, mimeType.c_str(), size);
 
-		char* ptr = response.data() + strlen(response.data());
+        char* ptr = response.data() + strlen(response.data());
 
-		size_t bytesRead = fread(ptr, 1, static_cast<size_t>(size), file);
+        size_t bytesRead = fread(ptr, 1, static_cast<size_t>(size), file);
 
-		ptr += bytesRead;
+        ptr += bytesRead;
 
-		memcpy(ptr, "\r\n", 2);
+        memcpy(ptr, "\r\n", 2);
 
-		if (bytesRead != size) {
-			printf("warning: read size not match\n");
-		}
+        if (bytesRead != size) {
+            printf("warning: read size not match\n");
+        }
 
-		fclose(file);
+        fclose(file);
 
-		return Response(response, true);
-	} else {
-		return Response();
-	}
+        return Response(response, true);
+    } else {
+        return Response();
+    }
 }
 
 pthread_mutex_t mutex;
