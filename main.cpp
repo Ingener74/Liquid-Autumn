@@ -92,6 +92,9 @@ private:
 
 namespace json {
 
+#define json_assert(cond, message) if(!(cond)) throw std::runtime_error(message);
+#define json_assertx(cond, format, ...) if(!(cond)) throw std::runtime_error(xsnprintf(128, format, __VA_ARGS__));
+
 template<typename T>
 class CreateVector {
 public:
@@ -116,51 +119,187 @@ bool any_of(const std::vector<char>& symbols, char sym) {
 	return it != symbols.end();
 }
 
-static std::vector<char> integer_ = CreateVector<char>('0')('1')('2')('3')('4')('5')('6')('7')('8')('9');
+bool all_of(const std::vector<char>& symbols, const std::string& string) {
+	bool result = !string.empty();
+	for (std::string::const_iterator ch = string.begin(); ch != string.end(); ++ch) {
+		result &= any_of(symbols, *ch);
+	}
+	return result;
+}
+
+bool isTrue(const std::string& string) {
+	if (string.empty() || string.size() != 4)
+		return false;
+	return
+		(string.at(0) == 'T' || string.at(0) == 't') &&
+		(string.at(1) == 'R' || string.at(1) == 'r') &&
+		(string.at(2) == 'U' || string.at(2) == 'u') &&
+		(string.at(3) == 'E' || string.at(3) == 'e');
+}
+bool isFalse(const std::string& string) {
+	if (string.empty() || string.size() != 5)
+		return false;
+	return
+		(string.at(0) == 'F' || string.at(0) == 'f') &&
+		(string.at(1) == 'A' || string.at(1) == 'a') &&
+		(string.at(2) == 'L' || string.at(2) == 'l') &&
+		(string.at(3) == 'S' || string.at(3) == 's') &&
+		(string.at(4) == 'E' || string.at(4) == 'e');
+}
+
+static std::vector<char> integer_ = CreateVector<char>('0')('1')('2')('3')('4')('5')('6')('7')('8')('9')('-');
 static std::vector<char> float_ = CreateVector<char>('0')('1')('2')('3')('4')('5')('6')('7')('8')('9')('.')('e')('E')('+')('-');
+static std::vector<char> true_ = CreateVector<char>('t')('T')('r')('R')('u')('U')('e')('E');
+static std::vector<char> false_ = CreateVector<char>('f')('F')('a')('A')('l')('L')('s')('S')('e')('E');
 
-std::vector<std::string> tokenize(const std::string& string) {
-	std::vector<std::string> tokens;
-	std::string token;
+struct Token {
+	enum Type {
+		ObjectStart,
+		ObjectEnd,
+		ArrayStart,
+		ArrayEnd,
+		Semicolon,
+		Comma,
+		Integer,
+		Float,
+		String,
+		Bool,
+	};
 
+	Token(Type type, const std::string& value = std::string()) : type(type), value(value)
+	{}
+
+	friend std::ostream& operator<<(std::ostream& os, const Token& token)
+	{
+		static std::map<Type, std::string> tokenTypes =
+				CreateMap<Type, std::string>
+						(ObjectStart, "{")
+						(ObjectEnd, "}")
+						(ArrayStart, "[")
+						(ArrayEnd, "]")
+						(Semicolon, ":")
+						(Comma, ",")
+						(Integer, "Integer")
+						(Float, "Float")
+						(String, "String")
+						(Bool, "Bool");
+		;
+		os << "type: " << tokenTypes.at(token.type) << (token.value.empty() ? "" : " value: " + token.value);
+		return os;
+	}
+
+	Type type;
+	std::string value;
+};
+
+typedef std::vector<Token> Tokens;
+
+Tokens tokenize(const std::string& string) {
+	Tokens tokens;
 	for (std::string::const_iterator ch = string.begin(); ch != string.end(); ++ch) {
 		if (*ch == '{') {
-			tokens.push_back("{");
+			tokens.push_back(Token(Token::ObjectStart));
 		} else if (*ch == '}') {
-			tokens.push_back("}");
+			tokens.push_back(Token(Token::ObjectEnd));
 		} else if (*ch == '[') {
-			tokens.push_back("[");
+			tokens.push_back(Token(Token::ArrayStart));
 		} else if (*ch == ']') {
-			tokens.push_back("]");
+			tokens.push_back(Token(Token::ObjectEnd));
 		} else if (*ch == ':') {
-			tokens.push_back(":");
+			tokens.push_back(Token(Token::Semicolon));
 		} else if (*ch == ',') {
-			tokens.push_back(",");
+			tokens.push_back(Token(Token::Comma));
 		} else if (*ch == '\"') {
-			++ch;
-			while (*ch != '\"') {
+			std::string token;
+			while (*++ch != '\"')
 				token.push_back(*ch);
-				++ch;
-			}
-			tokens.push_back(token);
-			token.clear();
-		} else if (any_of(integer_, *ch)) {
-			token.push_back(*ch++);
-			while (any_of(integer_, *ch)) {
+			tokens.push_back(Token(Token::String, token));
+		} else if (any_of(integer_, *ch) || any_of(float_, *ch)) {
+			std::string token;
+			Token::Type type = Token::Integer;
+			bool isInteger;
+			bool isFloat;
+			do {
+				isInteger = any_of(integer_, *ch);
+				isFloat = any_of(float_, *ch);
+				if (isFloat)
+					type = Token::Float;
 				token.push_back(*ch++);
-			}
-			tokens.push_back(token);
-		} else if (any_of(float_, *ch)) {
-			token.push_back(*ch);
-			++ch;
-			while (any_of(float_, *ch)) {
-				token.push_back(*ch);
-				++ch;
-			}
-			tokens.push_back(token);
+			} while (isInteger || isFloat);
+			tokens.push_back(Token(type, token));
+		} else if (any_of(true_, *ch) || any_of(false_, *ch)) {
+			std::string token;
+			token.push_back(*ch++);
+			while(any_of(true_, *ch) || any_of(false_, *ch))
+				token.push_back(*ch++);
+			tokens.push_back(Token(Token::Bool, isTrue(token) ? "true" : isFalse(token) ? "false" : throw std::runtime_error("something wrong, not true and not false")));
 		}
 	}
 	return tokens;
+}
+
+/**
+ * Json grammar rules description
+ *
+ * Json    ::= Object | Array
+ * Object  ::= ObjectStart, Records, ObjectEnd | ObjectStart, ObjectEnd
+ * Array   ::= ArrayStart, Values, ArrayEnd | ArrayStart, ArrayEnd
+ * Values  ::= Value, Comma, Values | Value
+ * Value   ::= Integer | String | FLoat | Bool | Array | Object
+ * Records ::= Record, Comma, Records | Record
+ * Record  ::= String, Semicolon, Value
+ */
+
+enum NonTerminals {
+	Json = 100,
+	Empty,
+	Object,
+	Array,
+	Records,
+	Record,
+	Values,
+	Value,
+};
+
+typedef std::vector<int> Items;
+typedef std::vector<Items> Variants;
+typedef std::map<NonTerminals, Variants> Rules;
+
+static Rules jsonGrammarRules = CreateMap<NonTerminals, Variants>
+		(Json, CreateVector<Items>
+				(CreateVector<int>(Object))
+				(CreateVector<int>(Array))
+		)
+		(Object, CreateVector<Items>
+				(CreateVector<int>(Token::ObjectStart)(Records)(Token::ObjectEnd))
+				(CreateVector<int>(Token::ObjectStart)(Token::ObjectEnd))
+		)
+		(Array, CreateVector<Items>
+				(CreateVector<int>(Token::ArrayStart)(Values)(Token::ArrayEnd))
+				(CreateVector<int>(Token::ArrayStart)(Token::ArrayEnd))
+		)
+		(Values, CreateVector<Items>
+				(CreateVector<int>(Value)(Token::Comma)(Values))
+				(CreateVector<int>(Value))
+		)
+		(Value, CreateVector<Items>
+				(CreateVector<int>(Token::Integer))
+				(CreateVector<int>(Token::Float))
+				(CreateVector<int>(Token::String))
+				(CreateVector<int>(Token::Bool))
+				(CreateVector<int>(Array))
+				(CreateVector<int>(Object))
+		)
+		(Records, CreateVector<Items>
+				(CreateVector<int>(Record)(Token::Comma)(Records))
+				(CreateVector<int>(Record))
+		)
+		(Records, CreateVector<Items>
+				(CreateVector<int>(Token::String)(Token::Semicolon)(Object))
+		)
+;
+
+void parse(const Tokens& tokens) {
 }
 
 class Type {
@@ -998,15 +1137,26 @@ void stopProgramRequest(const Params&) {
 
 int main() {
 
-	typedef std::vector<std::string> Tokens;
+	try  {
+		typedef std::vector<json::Token> Tokens;
 
-	const char* test_json =
-			"{\"Pasha\": \"Xyu\", \"Pi\": 3.1415, \"meaningOfLife\": 42, \"FuckingString\": \"Tra ta ta\"}";
+		const char* test_json =
+				"{"
+						"\"Pasha\": \"Xyu\", "
+						"\"Pi\": 3.1415, "
+						"\"meaningOfLife\": 42, "
+						"\"FuckingString\": \"Tra ta ta\", "
+						"\"MyHeartIsBroken\": True, "
+						"\"AllBad\": False"
+				"}";
 
-	Tokens tokens = json::tokenize(test_json);
+		Tokens tokens = json::tokenize(test_json);
 
-	for (Tokens::iterator it = tokens.begin(); it != tokens.end(); ++it) {
-		std::cout << *it << std::endl;
+		for (Tokens::iterator it = tokens.begin(); it != tokens.end(); ++it) {
+			std::cout << *it << std::endl;
+		}
+	} catch (std::exception const& e) {
+		std::cerr << e.what() << std::endl;
 	}
 
     pthread_mutex_init(&mutex, NULL);
