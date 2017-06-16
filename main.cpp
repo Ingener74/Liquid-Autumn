@@ -16,6 +16,7 @@
 #include <sstream>
 #include <algorithm>
 #include <iostream>
+#include <limits>
 
 // json: https://github.com/zserge/jsmn
 
@@ -83,14 +84,103 @@ public:
 template<typename T>
 class Ptr {
 public:
-    Ptr(T* t = 0) : t(t) {}
+    Ptr(T* t = NULL) : t(t) {}
     ~Ptr() { if (t) delete t; }
 	T* operator->() { return t ? t : throw std::runtime_error("pointer is null"); }
 private:
 	T* t;
 };
 
+template<typename T>
+class XPtr {
+public:
+    XPtr(T* t = NULL) : t(t) {}
+    ~XPtr() { if (t) delete t; t = NULL; }
+	T* operator->() { return t ? t : throw std::runtime_error("pointer is null"); }
+	const T* operator->() const { return t ? t : throw std::runtime_error("pointer is null"); }
+	XPtr(const XPtr& rhs) { *this = rhs; }
+	XPtr& operator=(const XPtr& rhs) {
+		if (this != &rhs) {
+			if (t) {
+				delete t;
+				t = NULL;
+			}
+			t = rhs.t->clone();
+		}
+		return *this;
+	}
+private:
+	T* t;
+};
+
 namespace json {
+
+namespace mystd {
+
+template<typename T>
+class MyAllocator{
+public :
+	//    typedefs
+	typedef T value_type;
+	typedef value_type* pointer;
+	typedef const value_type* const_pointer;
+	typedef value_type& reference;
+	typedef const value_type& const_reference;
+	typedef std::size_t size_type;
+	typedef std::ptrdiff_t difference_type;
+public :
+	//    convert an allocator<T> to allocator<U>
+
+	template<typename U>
+	struct rebind {
+		typedef MyAllocator<U> other;
+	};
+
+public :
+	inline explicit MyAllocator() {}
+	inline ~MyAllocator() {}
+	inline explicit MyAllocator(MyAllocator const&) {}
+	template<typename U>
+	inline explicit MyAllocator(MyAllocator<U> const&) {}
+
+	//    address
+
+	inline pointer address(reference r) { return &r; }
+	inline const_pointer address(const_reference r) { return &r; }
+
+	//    memory allocation
+
+	inline pointer allocate(size_type cnt,
+							typename std::allocator<void>::const_pointer = 0) {
+		std::cout<<"Trying to allocate "<<cnt<<" objects in memory"<<std::endl;
+		pointer new_memory = reinterpret_cast<pointer>(::operator new(cnt * sizeof (T)));
+		std::cout<<"Allocated "<<cnt<<" objects in memory at location:"<<new_memory<<std::endl;
+		return new_memory;
+	}
+	inline void deallocate(pointer p, size_type n) {
+		::operator delete(p);
+		std::cout<<"Deleted "<<n<<" objects from memory"<<std::endl;
+	}
+	//    size
+	inline size_type max_size() const {
+		return std::numeric_limits<size_type>::max() / sizeof(T);
+	}
+
+	//    construction/destruction
+
+	inline void construct(pointer p, const T& t) {
+		std::cout<<"Constructing at memory location:" <<p<<std::endl;
+		new(p) T(t);
+	}
+	inline void destroy(pointer p) {
+		std::cout<<"Destroying object at memory location:" <<p<<std::endl;
+		p->~T();
+	}
+
+	inline bool operator==(MyAllocator const&) { return true; }
+	inline bool operator!=(MyAllocator const& a) { return !operator==(a); }
+};    //    end of class MyAllocator
+} // end of namespace mystd
 
 #define json_assert(cond, message) if(!(cond)) throw std::runtime_error(message);
 #define json_assertx(cond, format, ...) if(!(cond)) throw std::runtime_error(xsnprintf(128, format, __VA_ARGS__));
@@ -224,16 +314,20 @@ Tokens tokenize(const std::string& string) {
 				isFloat = any_of(float_, *ch);
 				if (isFloat)
 					type = Token::Float;
-				token.push_back(*ch++);
+				if (isInteger || isFloat)
+					token.push_back(*ch++);
 			} while (isInteger || isFloat);
 			tokens.push_back(Token(type, token));
+			ch--;
 		} else if (any_of(true_, *ch) || any_of(false_, *ch)) {
 			std::string token;
 			token.push_back(*ch++);
 			while(any_of(true_, *ch) || any_of(false_, *ch))
 				token.push_back(*ch++);
 			tokens.push_back(Token(Token::Bool, isTrue(token) ? "true" : isFalse(token) ? "false" : throw std::runtime_error("something wrong, not true and not false")));
-		}
+			ch--;
+		} else if(*ch == ' ' || *ch == '\n' || *ch == '\t') {
+		} else throw std::runtime_error(xsnprintf(64, "invalid symbol %d", static_cast<int>(*ch)));
 	}
 	return tokens;
 }
@@ -253,12 +347,14 @@ Tokens tokenize(const std::string& string) {
 enum NonTerminals {
 	Json = 100,
 	Empty,
-	Object,
-	Array,
+	Obj,
+	Arr,
 	Records,
 	Record,
 	Values,
 	Value,
+
+	NonTerminalsCount,
 };
 
 typedef std::vector<int> Items;
@@ -267,14 +363,14 @@ typedef std::map<NonTerminals, Variants> Rules;
 
 static Rules jsonGrammarRules = CreateMap<NonTerminals, Variants>
 		(Json, CreateVector<Items>
-				(CreateVector<int>(Object))
-				(CreateVector<int>(Array))
+				(CreateVector<int>(Obj))
+				(CreateVector<int>(Arr))
 		)
-		(Object, CreateVector<Items>
+		(Obj, CreateVector<Items>
 				(CreateVector<int>(Token::ObjectStart)(Records)(Token::ObjectEnd))
 				(CreateVector<int>(Token::ObjectStart)(Token::ObjectEnd))
 		)
-		(Array, CreateVector<Items>
+		(Arr, CreateVector<Items>
 				(CreateVector<int>(Token::ArrayStart)(Values)(Token::ArrayEnd))
 				(CreateVector<int>(Token::ArrayStart)(Token::ArrayEnd))
 		)
@@ -287,15 +383,15 @@ static Rules jsonGrammarRules = CreateMap<NonTerminals, Variants>
 				(CreateVector<int>(Token::Float))
 				(CreateVector<int>(Token::String))
 				(CreateVector<int>(Token::Bool))
-				(CreateVector<int>(Array))
-				(CreateVector<int>(Object))
+				(CreateVector<int>(Arr))
+				(CreateVector<int>(Obj))
 		)
 		(Records, CreateVector<Items>
 				(CreateVector<int>(Record)(Token::Comma)(Records))
 				(CreateVector<int>(Record))
 		)
 		(Records, CreateVector<Items>
-				(CreateVector<int>(Token::String)(Token::Semicolon)(Object))
+				(CreateVector<int>(Token::String)(Token::Semicolon)(Obj))
 		)
 ;
 
@@ -306,19 +402,131 @@ class Type {
 public:
 	Type()
 	{}
+
+	virtual Type* clone() const = 0;
+
+	virtual std::string stringify() const = 0;
 };
+
+#define JSON_TYPE(Primary, secondary)         \
+class Primary : public Type {                 \
+public:                                       \
+    Primary(secondary value) : value(value)   \
+    {}                                        \
+    virtual Type* clone() const               \
+    {                                         \
+        return new Primary(*this);            \
+    }                                         \
+    virtual std::string stringify() const {   \
+        std::stringstream stream;             \
+        stream << value;                      \
+        return stream.str();                  \
+    }                                         \
+    secondary value;                          \
+};
+
+JSON_TYPE(Integer, int64_t)
+JSON_TYPE(String, std::string)
+JSON_TYPE(Float, double)
+JSON_TYPE(Bool, bool)
+
+class Array;
 
 class Object : public Type {
 public:
+	typedef std::map<std::string, XPtr<Type> > Fields;
 	Object()
 	{}
+
+	virtual Type* clone() const
+	{
+		return new Object(*this);
+	}
+
+	virtual std::string stringify() const
+	{
+		std::stringstream stream;
+		stream << "{";
+		for (Fields::const_iterator it = fields.begin(); it != fields.end(); ++it) {
+			if (it != fields.begin()) {
+				stream << ", ";
+			}
+			stream << it->first << ": " << it->second->stringify();
+		}
+		stream << "}";
+		return stream.str();
+	}
+
+	Object& add(const std::string& key, const std::string& v) {
+		json_assert(fields.insert(std::make_pair(key, new String(v))).second, "can't insert field");
+		return *this;
+	}
+
+	Object& add(const std::string& key, const char* v) {
+		json_assert(fields.insert(std::make_pair(key, new String(v))).second, "can't insert field");
+		return *this;
+	}
+
+	Object& add(const std::string& key, int64_t v) {
+		json_assert(fields.insert(std::make_pair(key, new Integer(v))).second, "can't insert field");
+		return *this;
+	}
+
+	Object& add(const std::string& key, int v) {
+		json_assert(fields.insert(std::make_pair(key, new Integer(static_cast<int64_t>(v)))).second, "can't insert field");
+		return *this;
+	}
+
+	Object& add(const std::string& key, bool v) {
+		json_assert(fields.insert(std::make_pair(key, new Bool(v))).second, "can't insert field");
+		return *this;
+	}
+
+	Object& add(const std::string& key, double v) {
+		json_assert(fields.insert(std::make_pair(key, new Float(v))).second, "can't insert field");
+		return *this;
+	}
+
+	Object& add(const std::string& key, const Object& v) {
+		json_assert(fields.insert(std::make_pair(key, new Object(v))).second, "can't insert field");
+		return *this;
+	}
+
+	Object& add(const std::string& key, const Array& v);
+
+	std::map<std::string, XPtr<Type>,  > fields;
 };
 
 class Array : public Type {
 public:
+	typedef std::vector<XPtr<Type> > Fields;
 	Array()
 	{}
+
+	virtual Array* clone() const
+	{
+		return new Array(*this);
+	}
+
+	virtual std::string stringify() const
+	{
+		std::stringstream stream;
+		stream << "{";
+		for (Fields::const_iterator it = fields.begin(); it != fields.end(); ++it) {
+			stream << (*it)->stringify() << ((it + 1) == fields.end() ? ", " : "");
+		}
+		stream << "}";
+		return stream.str();
+	}
+
+	std::vector<XPtr<Type> > fields;
 };
+
+Object& Object::add(const std::string& key, const Array& v)
+{
+	json_assert(fields.insert(std::make_pair(key, new Array(v))).second, "can't insert field");
+	return *this;
+}
 
 void jsonParse(const char* json) {
 }
@@ -1136,18 +1344,17 @@ void stopProgramRequest(const Params&) {
 }
 
 int main() {
-
 	try  {
 		typedef std::vector<json::Token> Tokens;
 
 		const char* test_json =
 				"{"
-						"\"Pasha\": \"Xyu\", "
-						"\"Pi\": 3.1415, "
-						"\"meaningOfLife\": 42, "
-						"\"FuckingString\": \"Tra ta ta\", "
-						"\"MyHeartIsBroken\": True, "
-						"\"AllBad\": False"
+						"\"Pasha\": \"Xyu\", \n"
+						"\"Pi\": 3.1415, \n"
+						"\"meaningOfLife\": 42, \n"
+						"\"FuckingString\": \"Tra ta ta\", \n"
+						"\"MyHeartIsBroken\": True, \n"
+						"\t\"AllBad\": False\n"
 				"}";
 
 		Tokens tokens = json::tokenize(test_json);
@@ -1155,6 +1362,14 @@ int main() {
 		for (Tokens::iterator it = tokens.begin(); it != tokens.end(); ++it) {
 			std::cout << *it << std::endl;
 		}
+
+		json::Object root;
+		std::cout << root.
+				add("Test String", "string").
+				add("Test Integer", 42).
+				add("Test Float", 3.1415).
+				add("Test Bool", false).stringify() << std::endl;
+
 	} catch (std::exception const& e) {
 		std::cerr << e.what() << std::endl;
 	}
