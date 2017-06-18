@@ -118,7 +118,7 @@ namespace json {
 namespace mystd {
 
 template<typename T>
-class MyAllocator{
+class clean_allocator {
 public :
 	//    typedefs
 	typedef T value_type;
@@ -133,15 +133,15 @@ public :
 
 	template<typename U>
 	struct rebind {
-		typedef MyAllocator<U> other;
+		typedef clean_allocator<U> other;
 	};
 
 public :
-	inline explicit MyAllocator() {}
-	inline ~MyAllocator() {}
-	inline explicit MyAllocator(MyAllocator const&) {}
+	inline explicit clean_allocator() {}
+	inline ~clean_allocator() {}
+	inline explicit clean_allocator(clean_allocator const&) {}
 	template<typename U>
-	inline explicit MyAllocator(MyAllocator<U> const&) {}
+	inline explicit clean_allocator(clean_allocator<U> const&) {}
 
 	//    address
 
@@ -152,14 +152,11 @@ public :
 
 	inline pointer allocate(size_type cnt,
 							typename std::allocator<void>::const_pointer = 0) {
-		std::cout<<"Trying to allocate "<<cnt<<" objects in memory"<<std::endl;
 		pointer new_memory = reinterpret_cast<pointer>(::operator new(cnt * sizeof (T)));
-		std::cout<<"Allocated "<<cnt<<" objects in memory at location:"<<new_memory<<std::endl;
 		return new_memory;
 	}
 	inline void deallocate(pointer p, size_type n) {
 		::operator delete(p);
-		std::cout<<"Deleted "<<n<<" objects from memory"<<std::endl;
 	}
 	//    size
 	inline size_type max_size() const {
@@ -169,17 +166,16 @@ public :
 	//    construction/destruction
 
 	inline void construct(pointer p, const T& t) {
-		std::cout<<"Constructing at memory location:" <<p<<std::endl;
 		new(p) T(t);
 	}
 	inline void destroy(pointer p) {
-		std::cout<<"Destroying object at memory location:" <<p<<std::endl;
 		p->~T();
 	}
 
-	inline bool operator==(MyAllocator const&) { return true; }
-	inline bool operator!=(MyAllocator const& a) { return !operator==(a); }
-};    //    end of class MyAllocator
+	inline bool operator==(clean_allocator const&) { return true; }
+	inline bool operator!=(clean_allocator const& a) { return !operator==(a); }
+};    //    end of class clean_allocator
+
 } // end of namespace mystd
 
 #define json_assert(cond, message) if(!(cond)) throw std::runtime_error(message);
@@ -361,37 +357,41 @@ typedef std::vector<int> Items;
 typedef std::vector<Items> Variants;
 typedef std::map<NonTerminals, Variants> Rules;
 
-static Rules jsonGrammarRules = CreateMap<NonTerminals, Variants>
-		(Json, CreateVector<Items>
-				(CreateVector<int>(Obj))
-				(CreateVector<int>(Arr))
+typedef CreateMap<NonTerminals, Variants> CreateRules;
+typedef CreateVector<Items> CreateItems;
+typedef CreateVector<int> CreateVariant;
+
+static Rules jsonGrammarRules = CreateRules
+		(Json, CreateItems
+				(CreateVariant(Obj))
+				(CreateVariant(Arr))
 		)
-		(Obj, CreateVector<Items>
-				(CreateVector<int>(Token::ObjectStart)(Records)(Token::ObjectEnd))
-				(CreateVector<int>(Token::ObjectStart)(Token::ObjectEnd))
+		(Obj, CreateItems
+				(CreateVariant(Token::ObjectStart)(Records)(Token::ObjectEnd))
+				(CreateVariant(Token::ObjectStart)(Token::ObjectEnd))
 		)
-		(Arr, CreateVector<Items>
-				(CreateVector<int>(Token::ArrayStart)(Values)(Token::ArrayEnd))
-				(CreateVector<int>(Token::ArrayStart)(Token::ArrayEnd))
+		(Arr, CreateItems
+				(CreateVariant(Token::ArrayStart)(Values)(Token::ArrayEnd))
+				(CreateVariant(Token::ArrayStart)(Token::ArrayEnd))
 		)
-		(Values, CreateVector<Items>
-				(CreateVector<int>(Value)(Token::Comma)(Values))
-				(CreateVector<int>(Value))
+		(Records, CreateItems
+				(CreateVariant(Record)(Token::Comma)(Records))
+				(CreateVariant(Record))
 		)
-		(Value, CreateVector<Items>
-				(CreateVector<int>(Token::Integer))
-				(CreateVector<int>(Token::Float))
-				(CreateVector<int>(Token::String))
-				(CreateVector<int>(Token::Bool))
-				(CreateVector<int>(Arr))
-				(CreateVector<int>(Obj))
+		(Record, CreateItems
+				(CreateVariant(Token::String)(Token::Semicolon)(Value))
 		)
-		(Records, CreateVector<Items>
-				(CreateVector<int>(Record)(Token::Comma)(Records))
-				(CreateVector<int>(Record))
+		(Values, CreateItems
+				(CreateVariant(Value)(Token::Comma)(Values))
+				(CreateVariant(Value))
 		)
-		(Records, CreateVector<Items>
-				(CreateVector<int>(Token::String)(Token::Semicolon)(Obj))
+		(Value, CreateItems
+				(CreateVariant(Obj))
+				(CreateVariant(Arr))
+				(CreateVariant(Token::String))
+				(CreateVariant(Token::Float))
+				(CreateVariant(Token::Integer))
+				(CreateVariant(Token::Bool))
 		)
 ;
 
@@ -408,21 +408,20 @@ public:
 	virtual std::string stringify() const = 0;
 };
 
-#define JSON_TYPE(Primary, secondary)         \
-class Primary : public Type {                 \
-public:                                       \
-    Primary(secondary value) : value(value)   \
-    {}                                        \
-    virtual Type* clone() const               \
-    {                                         \
-        return new Primary(*this);            \
-    }                                         \
-    virtual std::string stringify() const {   \
-        std::stringstream stream;             \
-        stream << value;                      \
-        return stream.str();                  \
-    }                                         \
-    secondary value;                          \
+#define JSON_TYPE(Primary, secondary)           \
+class Primary : public Type {                   \
+public:                                         \
+    Primary(secondary value) : value(value){}   \
+    virtual Type* clone() const                 \
+    {                                           \
+        return new Primary(*this);              \
+    }                                           \
+    virtual std::string stringify() const {     \
+        std::stringstream stream;               \
+        stream << value;                        \
+        return stream.str();                    \
+    }                                           \
+    secondary value;                            \
 };
 
 JSON_TYPE(Integer, int64_t)
@@ -494,7 +493,9 @@ public:
 
 	Object& add(const std::string& key, const Array& v);
 
-	std::map<std::string, XPtr<Type>,  > fields;
+	std::map<std::string, XPtr<Type>,
+			std::less<std::string>,
+			mystd::clean_allocator<std::pair<std::string, XPtr<Type> > > > fields;
 };
 
 class Array : public Type {
