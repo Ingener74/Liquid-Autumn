@@ -25,6 +25,57 @@
 
 namespace dws {
 
+template<typename T>
+class clean_allocator {
+public :
+	typedef T value_type;
+	typedef value_type* pointer;
+	typedef const value_type* const_pointer;
+	typedef value_type& reference;
+	typedef const value_type& const_reference;
+	typedef std::size_t size_type;
+	typedef std::ptrdiff_t difference_type;
+public :
+
+	template<typename U>
+	struct rebind {
+		typedef clean_allocator<U> other;
+	};
+
+public :
+	clean_allocator() {}
+	inline ~clean_allocator() {}
+	clean_allocator(clean_allocator const&) {}
+	template<typename U>
+	clean_allocator(clean_allocator<U> const&) {}
+
+	inline pointer address(reference r) { return &r; }
+	inline const_pointer address(const_reference r) { return &r; }
+
+	inline pointer allocate(size_type cnt, typename std::allocator<void>::const_pointer = 0) {
+		pointer new_memory = reinterpret_cast<pointer>(::operator new(cnt * sizeof (T)));
+		memset(new_memory, 0, cnt * sizeof(T));
+		return new_memory;
+	}
+	inline void deallocate(pointer p, size_type n) {
+		::operator delete(p);
+	}
+	//    size
+	inline size_type max_size() const {
+		return std::numeric_limits<size_type>::max() / sizeof(T);
+	}
+
+	inline void construct(pointer p, const T& t) {
+		new(p) T(t);
+	}
+	inline void destroy(pointer p) {
+		p->~T();
+	}
+
+	inline bool operator==(clean_allocator const&) { return true; }
+	inline bool operator!=(clean_allocator const& a) { return !operator==(a); }
+};
+
 }
 
 class ServerSocket;
@@ -115,71 +166,9 @@ private:
 
 namespace json {
 
-namespace mystd {
-
-template<typename T>
-class clean_allocator {
-public :
-	//    typedefs
-	typedef T value_type;
-	typedef value_type* pointer;
-	typedef const value_type* const_pointer;
-	typedef value_type& reference;
-	typedef const value_type& const_reference;
-	typedef std::size_t size_type;
-	typedef std::ptrdiff_t difference_type;
-public :
-	//    convert an allocator<T> to allocator<U>
-
-	template<typename U>
-	struct rebind {
-		typedef clean_allocator<U> other;
-	};
-
-public :
-	inline explicit clean_allocator() {}
-	inline ~clean_allocator() {}
-	inline explicit clean_allocator(clean_allocator const&) {}
-	template<typename U>
-	inline explicit clean_allocator(clean_allocator<U> const&) {}
-
-	//    address
-
-	inline pointer address(reference r) { return &r; }
-	inline const_pointer address(const_reference r) { return &r; }
-
-	//    memory allocation
-
-	inline pointer allocate(size_type cnt,
-							typename std::allocator<void>::const_pointer = 0) {
-		pointer new_memory = reinterpret_cast<pointer>(::operator new(cnt * sizeof (T)));
-		return new_memory;
-	}
-	inline void deallocate(pointer p, size_type n) {
-		::operator delete(p);
-	}
-	//    size
-	inline size_type max_size() const {
-		return std::numeric_limits<size_type>::max() / sizeof(T);
-	}
-
-	//    construction/destruction
-
-	inline void construct(pointer p, const T& t) {
-		new(p) T(t);
-	}
-	inline void destroy(pointer p) {
-		p->~T();
-	}
-
-	inline bool operator==(clean_allocator const&) { return true; }
-	inline bool operator!=(clean_allocator const& a) { return !operator==(a); }
-};    //    end of class clean_allocator
-
-} // end of namespace mystd
-
 #define json_assert(cond, message) if(!(cond)) throw std::runtime_error(message);
 #define json_assertx(cond, format, ...) if(!(cond)) throw std::runtime_error(xsnprintf(128, format, __VA_ARGS__));
+
 
 template<typename T>
 class CreateVector {
@@ -425,20 +414,47 @@ public:                                         \
 };
 
 JSON_TYPE(Integer, int64_t)
-JSON_TYPE(String, std::string)
+//JSON_TYPE(String, std::string)
 JSON_TYPE(Float, double)
-JSON_TYPE(Bool, bool)
+//JSON_TYPE(Bool, bool)
+
+class String : public Type {
+public:
+    String(std::string const& value) : value(value){}
+    virtual Type* clone() const
+    {
+        return new String(*this);
+    }
+    virtual std::string stringify() const {
+        std::stringstream stream;
+        stream << "\"" << value << "\"";
+        return stream.str();
+    }
+    std::string value;
+};
+
+class Bool : public Type {
+public:
+    Bool(bool value) : value(value){}
+    virtual Type* clone() const {
+        return new Bool(*this);
+    }
+    virtual std::string stringify() const {
+        std::stringstream stream;
+        stream << (value ? "true" : "false");
+        return stream.str();
+    }
+    bool value;
+};
 
 class Array;
 
 class Object : public Type {
 public:
 	typedef std::map<std::string, XPtr<Type> > Fields;
-	Object()
-	{}
+	Object() {}
 
-	virtual Type* clone() const
-	{
+	virtual Type* clone() const {
 		return new Object(*this);
 	}
 
@@ -450,83 +466,85 @@ public:
 			if (it != fields.begin()) {
 				stream << ", ";
 			}
-			stream << it->first << ": " << it->second->stringify();
+			stream << "\"" << it->first << "\"" << ": " << it->second->stringify();
 		}
 		stream << "}";
 		return stream.str();
 	}
 
-	Object& add(const std::string& key, const std::string& v) {
-		json_assert(fields.insert(std::make_pair(key, new String(v))).second, "can't insert field");
-		return *this;
-	}
+	Object& operator()(const std::string& key, const std::string& v) { return add<String>(key, v); }
+	Object& operator()(const std::string& key, const char* v) { return add<String>(key, v); }
+	Object& operator()(const std::string& key, int64_t v) { return add<Integer>(key, v); }
+	Object& operator()(const std::string& key, int v) { return add<Integer>(key, static_cast<int64_t>(v)); }
+	Object& operator()(const std::string& key, bool v) { return add<Bool>(key, v); }
+	Object& operator()(const std::string& key, double v) { return add<Float>(key, v); }
+	Object& operator()(const std::string& key, const Object& v) { return add<Object>(key, v); }
+	Object& operator()(const std::string& key, const Array& v);
 
-	Object& add(const std::string& key, const char* v) {
-		json_assert(fields.insert(std::make_pair(key, new String(v))).second, "can't insert field");
+	template<typename T, typename V>
+	Object& add(const std::string& key, const V& v) {
+		json_assert(fields.insert(std::make_pair(key, new T(v))).second, "can't insert field");
 		return *this;
-	}
+	};
 
-	Object& add(const std::string& key, int64_t v) {
-		json_assert(fields.insert(std::make_pair(key, new Integer(v))).second, "can't insert field");
-		return *this;
+	friend std::ostream& operator<<(std::ostream& os, const Object& object)
+	{
+		return os << object.stringify();
 	}
-
-	Object& add(const std::string& key, int v) {
-		json_assert(fields.insert(std::make_pair(key, new Integer(static_cast<int64_t>(v)))).second, "can't insert field");
-		return *this;
-	}
-
-	Object& add(const std::string& key, bool v) {
-		json_assert(fields.insert(std::make_pair(key, new Bool(v))).second, "can't insert field");
-		return *this;
-	}
-
-	Object& add(const std::string& key, double v) {
-		json_assert(fields.insert(std::make_pair(key, new Float(v))).second, "can't insert field");
-		return *this;
-	}
-
-	Object& add(const std::string& key, const Object& v) {
-		json_assert(fields.insert(std::make_pair(key, new Object(v))).second, "can't insert field");
-		return *this;
-	}
-
-	Object& add(const std::string& key, const Array& v);
 
 	std::map<std::string, XPtr<Type>,
 			std::less<std::string>,
-			mystd::clean_allocator<std::pair<std::string, XPtr<Type> > > > fields;
+			dws::clean_allocator<std::pair<const std::string, XPtr<Type> > > > fields;
 };
 
 class Array : public Type {
 public:
-	typedef std::vector<XPtr<Type> > Fields;
-	Array()
-	{}
+	typedef std::vector<XPtr<Type>, dws::clean_allocator<XPtr<Type> > > Fields;
+	Array() {}
 
-	virtual Array* clone() const
-	{
+	virtual Array* clone() const {
 		return new Array(*this);
 	}
 
-	virtual std::string stringify() const
-	{
+	Array& operator()(const std::string& v) { return add<String>(v); }
+	Array& operator()(const char* v) { return add<String>(v); }
+	Array& operator()(int64_t v) { return add<Integer>(v); }
+	Array& operator()(int v) { return add<Integer>(static_cast<int64_t>(v)); }
+	Array& operator()(bool v) { return add<Bool>(v); }
+	Array& operator()(double v) { return add<Float>(v); }
+	Array& operator()(const Object& v) { return add<Object>(v); }
+	Array& operator()(const Array& v) { return add<Array>(v); }
+
+	template<typename T, typename V>
+	Array& add(const V& v) {
+		fields.push_back(new T(v));
+		return *this;
+	};
+
+	virtual std::string stringify() const {
 		std::stringstream stream;
-		stream << "{";
+		stream << "[";
 		for (Fields::const_iterator it = fields.begin(); it != fields.end(); ++it) {
-			stream << (*it)->stringify() << ((it + 1) == fields.end() ? ", " : "");
+			if (it != fields.begin())
+				stream << ", ";
+			stream << (*it)->stringify();
 		}
-		stream << "}";
-		return stream.str();
+		stream << "]";
+		std::string string = stream.str();
+		return string;
 	}
 
-	std::vector<XPtr<Type> > fields;
+	friend std::ostream& operator<<(std::ostream& os, const Array& array)
+	{
+		return os << array.stringify();
+	}
+
+	Fields fields;
 };
 
-Object& Object::add(const std::string& key, const Array& v)
+Object& Object::operator()(const std::string& key, const Array& v)
 {
-	json_assert(fields.insert(std::make_pair(key, new Array(v))).second, "can't insert field");
-	return *this;
+	return add<Array>(key, v);
 }
 
 void jsonParse(const char* json) {
@@ -1364,12 +1382,23 @@ int main() {
 			std::cout << *it << std::endl;
 		}
 
-		json::Object root;
-		std::cout << root.
-				add("Test String", "string").
-				add("Test Integer", 42).
-				add("Test Float", 3.1415).
-				add("Test Bool", false).stringify() << std::endl;
+		std::cout << json::Object()
+				("Test String", "string")
+				("Test object",
+					json::Object()
+							("Foo", 32)
+							("Bar", json::Array()
+									(564)
+									("Test")
+							)
+							("Quuz", json::Array()
+									(42)
+									(false)
+							)
+					)
+				("Test Integer", 42)
+				("Test Float", 3.1415)
+				("Test Bool", false) << std::endl;
 
 	} catch (std::exception const& e) {
 		std::cerr << e.what() << std::endl;
