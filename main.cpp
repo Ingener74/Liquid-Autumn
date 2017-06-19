@@ -146,9 +146,18 @@ template<typename T>
 class XPtr {
 public:
     XPtr(T* t = NULL) : t(t) {}
-    ~XPtr() { if (t) delete t; t = NULL; }
+    ~XPtr() {
+		if (t)
+			delete t;
+		t = NULL;
+	}
 	T* operator->() { return t ? t : throw std::runtime_error("pointer is null"); }
 	const T* operator->() const { return t ? t : throw std::runtime_error("pointer is null"); }
+	operator T*() { return t; }
+	template<typename U>
+	U* dcast() {
+		return dynamic_cast<U*>(t);
+	}
 	XPtr(const XPtr& rhs) { *this = rhs; }
 	XPtr& operator=(const XPtr& rhs) {
 		if (this != &rhs) {
@@ -241,8 +250,7 @@ struct Token {
 		Bool,
 	};
 
-	Token(Type type, const std::string& value = std::string()) : type(type), value(value)
-	{}
+	Token(Type type, const std::string& value = std::string()) : type(type), value(value) {}
 
 	friend std::ostream& operator<<(std::ostream& os, const Token& token)
 	{
@@ -258,64 +266,62 @@ struct Token {
 						(Float, "Float")
 						(String, "String")
 						(Bool, "Bool");
-		;
-		os << "type: " << tokenTypes.at(token.type) << (token.value.empty() ? "" : " value: " + token.value);
-		return os;
+		return os << "type: " << tokenTypes.at(token.type) << (token.value.empty() ? "" : " value: " + token.value);
+	}
+
+	typedef std::vector<Token> Tokens;
+
+	static Tokens tokenize(const std::string& string) {
+		Tokens tokens;
+		for (std::string::const_iterator ch = string.begin(); ch != string.end(); ++ch) {
+			if (*ch == '{') {
+				tokens.push_back(Token(Token::ObjectStart));
+			} else if (*ch == '}') {
+				tokens.push_back(Token(Token::ObjectEnd));
+			} else if (*ch == '[') {
+				tokens.push_back(Token(Token::ArrayStart));
+			} else if (*ch == ']') {
+				tokens.push_back(Token(Token::ObjectEnd));
+			} else if (*ch == ':') {
+				tokens.push_back(Token(Token::Semicolon));
+			} else if (*ch == ',') {
+				tokens.push_back(Token(Token::Comma));
+			} else if (*ch == '\"') {
+				std::string token;
+				while (*++ch != '\"')
+					token.push_back(*ch);
+				tokens.push_back(Token(Token::String, token));
+			} else if (any_of(integer_, *ch) || any_of(float_, *ch)) {
+				std::string token;
+				Token::Type type = Token::Integer;
+				bool isInteger;
+				bool isFloat;
+				do {
+					isInteger = any_of(integer_, *ch);
+					isFloat = any_of(float_, *ch);
+					if (isFloat)
+						type = Token::Float;
+					if (isInteger || isFloat)
+						token.push_back(*ch++);
+				} while (isInteger || isFloat);
+				tokens.push_back(Token(type, token));
+				ch--;
+			} else if (any_of(true_, *ch) || any_of(false_, *ch)) {
+				std::string token;
+				token.push_back(*ch++);
+				while(any_of(true_, *ch) || any_of(false_, *ch))
+					token.push_back(*ch++);
+				tokens.push_back(Token(Token::Bool, isTrue(token) ? "true" : isFalse(token) ? "false" : throw std::runtime_error("something wrong, not true and not false")));
+				ch--;
+			} else if(*ch == ' ' || *ch == '\n' || *ch == '\t') {
+			} else throw std::runtime_error(xsnprintf(64, "invalid symbol %d", static_cast<int>(*ch)));
+		}
+		return tokens;
 	}
 
 	Type type;
 	std::string value;
 };
-
-typedef std::vector<Token> Tokens;
-
-Tokens tokenize(const std::string& string) {
-	Tokens tokens;
-	for (std::string::const_iterator ch = string.begin(); ch != string.end(); ++ch) {
-		if (*ch == '{') {
-			tokens.push_back(Token(Token::ObjectStart));
-		} else if (*ch == '}') {
-			tokens.push_back(Token(Token::ObjectEnd));
-		} else if (*ch == '[') {
-			tokens.push_back(Token(Token::ArrayStart));
-		} else if (*ch == ']') {
-			tokens.push_back(Token(Token::ObjectEnd));
-		} else if (*ch == ':') {
-			tokens.push_back(Token(Token::Semicolon));
-		} else if (*ch == ',') {
-			tokens.push_back(Token(Token::Comma));
-		} else if (*ch == '\"') {
-			std::string token;
-			while (*++ch != '\"')
-				token.push_back(*ch);
-			tokens.push_back(Token(Token::String, token));
-		} else if (any_of(integer_, *ch) || any_of(float_, *ch)) {
-			std::string token;
-			Token::Type type = Token::Integer;
-			bool isInteger;
-			bool isFloat;
-			do {
-				isInteger = any_of(integer_, *ch);
-				isFloat = any_of(float_, *ch);
-				if (isFloat)
-					type = Token::Float;
-				if (isInteger || isFloat)
-					token.push_back(*ch++);
-			} while (isInteger || isFloat);
-			tokens.push_back(Token(type, token));
-			ch--;
-		} else if (any_of(true_, *ch) || any_of(false_, *ch)) {
-			std::string token;
-			token.push_back(*ch++);
-			while(any_of(true_, *ch) || any_of(false_, *ch))
-				token.push_back(*ch++);
-			tokens.push_back(Token(Token::Bool, isTrue(token) ? "true" : isFalse(token) ? "false" : throw std::runtime_error("something wrong, not true and not false")));
-			ch--;
-		} else if(*ch == ' ' || *ch == '\n' || *ch == '\t') {
-		} else throw std::runtime_error(xsnprintf(64, "invalid symbol %d", static_cast<int>(*ch)));
-	}
-	return tokens;
-}
 
 /**
  * Json grammar rules description
@@ -329,37 +335,73 @@ Tokens tokenize(const std::string& string) {
  * Record  ::= String, Semicolon, Value
  */
 
-enum NonTerminals {
-	Json = 100,
-	Empty,
-	Obj,
-	Arr,
-	Records,
-	Record,
-	Values,
-	Value,
+struct Parser {
+	enum NonTerminals {
+		Json = 100,
+		Empty,
+		Object,
+		Array,
+		Records,
+		Record,
+		Values,
+		Value,
 
-	NonTerminalsCount,
+		NonTerminalsCount,
+	};
+
+	enum Action {
+		Shift,
+		Reduce,
+		Error,
+		Accept,
+	};
+
+	struct ActionState {
+		Action action;
+		int state;
+
+		ActionState(Action action, int state) : action(action), state(state){}
+	};
+
+	typedef std::vector<int> Items;
+	typedef std::vector<Items> Variants;
+	typedef std::map<NonTerminals, Variants> Rules;
+
+	typedef CreateMap<NonTerminals, Variants> CreateRules;
+	typedef CreateVector<Items> CreateItems;
+	typedef CreateVector<int> CreateVariant;
+
+	static Rules jsonGrammarRules;
+
+	void parse(const Token::Tokens& tokens) {
+		std::vector<int> stack;
+		for (Token::Tokens::const_iterator tokenIt = tokens.begin(); tokenIt != tokens.end(); ++tokenIt) {
+//			tokenIt->
+		}
+	}
+
+	ActionState action() {
+		return ActionState(Shift, 0);
+	}
+
+	int goto_() {
+	}
+
+	void buildTables() {
+
+	}
 };
 
-typedef std::vector<int> Items;
-typedef std::vector<Items> Variants;
-typedef std::map<NonTerminals, Variants> Rules;
-
-typedef CreateMap<NonTerminals, Variants> CreateRules;
-typedef CreateVector<Items> CreateItems;
-typedef CreateVector<int> CreateVariant;
-
-static Rules jsonGrammarRules = CreateRules
+Parser::Rules Parser::jsonGrammarRules = CreateRules
 		(Json, CreateItems
-				(CreateVariant(Obj))
-				(CreateVariant(Arr))
+				(CreateVariant(Object))
+				(CreateVariant(Array))
 		)
-		(Obj, CreateItems
+		(Object, CreateItems
 				(CreateVariant(Token::ObjectStart)(Records)(Token::ObjectEnd))
 				(CreateVariant(Token::ObjectStart)(Token::ObjectEnd))
 		)
-		(Arr, CreateItems
+		(Array, CreateItems
 				(CreateVariant(Token::ArrayStart)(Values)(Token::ArrayEnd))
 				(CreateVariant(Token::ArrayStart)(Token::ArrayEnd))
 		)
@@ -375,8 +417,8 @@ static Rules jsonGrammarRules = CreateRules
 				(CreateVariant(Value))
 		)
 		(Value, CreateItems
-				(CreateVariant(Obj))
-				(CreateVariant(Arr))
+				(CreateVariant(Object))
+				(CreateVariant(Array))
 				(CreateVariant(Token::String))
 				(CreateVariant(Token::Float))
 				(CreateVariant(Token::Integer))
@@ -384,13 +426,9 @@ static Rules jsonGrammarRules = CreateRules
 		)
 ;
 
-void parse(const Tokens& tokens) {
-}
-
 class Type {
 public:
-	Type()
-	{}
+	Type() {}
 
 	virtual Type* clone() const = 0;
 
@@ -451,7 +489,9 @@ class Array;
 
 class Object : public Type {
 public:
-	typedef std::map<std::string, XPtr<Type> > Fields;
+	typedef std::map<std::string, XPtr<Type>,
+			std::less<std::string>,
+			dws::clean_allocator<std::pair<const std::string, XPtr<Type> > > > Fields;
 	Object() {}
 
 	virtual Type* clone() const {
@@ -487,6 +527,25 @@ public:
 		return *this;
 	};
 
+	template <typename T>
+	T* get(const std::string& key) {
+		Fields::iterator it = fields.find(key);
+		if (it == fields.end()) {
+			return NULL;
+		}
+		T* t = it->second.dcast<T>();
+		if (!t)
+			return NULL;
+		return t;
+	}
+
+	int64_t integerOr(const std::string& key, int64_t defaultValue = 0) {
+		Integer* integer = get<Integer>(key);
+		if (!integer)
+			return defaultValue;
+		return integer->value;
+	}
+
 	friend std::ostream& operator<<(std::ostream& os, const Object& object)
 	{
 		return os << object.stringify();
@@ -520,6 +579,21 @@ public:
 		fields.push_back(new T(v));
 		return *this;
 	};
+
+	template <typename T>
+	T* get(size_t index) {
+		T* t = fields.at(index).dcast<T>();
+		if (!t)
+			return NULL;
+		return t;
+	}
+
+	int64_t integerOr(size_t index, int64_t defaultValue = 0) {
+		Integer* integer = get<Integer>(index);
+		if (!integer)
+			return defaultValue;
+		return integer->value;
+	}
 
 	virtual std::string stringify() const {
 		std::stringstream stream;
@@ -1376,11 +1450,13 @@ int main() {
 						"\t\"AllBad\": False\n"
 				"}";
 
-		Tokens tokens = json::tokenize(test_json);
+		Tokens tokens = json::Token::tokenize(test_json);
 
 		for (Tokens::iterator it = tokens.begin(); it != tokens.end(); ++it) {
 			std::cout << *it << std::endl;
 		}
+
+		json::Parser::parse(tokens);
 
 		std::cout << json::Object()
 				("Test String", "string")
