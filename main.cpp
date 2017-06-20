@@ -373,22 +373,30 @@ struct Parser {
 
 	static Rules jsonGrammarRules;
 
-	void parse(const Token::Tokens& tokens) {
+	void buildActionAndGotoTables() {
+	}
+
+	void parse(Token::Tokens const& tokens) {
 		std::vector<int> stack;
 		for (Token::Tokens::const_iterator tokenIt = tokens.begin(); tokenIt != tokens.end(); ++tokenIt) {
-//			tokenIt->
+			ActionState actionState = action(*tokenIt);
+			if (actionState.action == Shift) {
+
+			} else if (actionState.action == Reduce) {
+
+			} else if (actionState.action == Error) {
+
+			} else if (actionState.action == Accept) {
+
+			}
 		}
 	}
 
-	ActionState action() {
+	ActionState action(Token const& token) {
 		return ActionState(Shift, 0);
 	}
 
 	int goto_() {
-	}
-
-	void buildTables() {
-
 	}
 };
 
@@ -1456,7 +1464,7 @@ int main() {
 			std::cout << *it << std::endl;
 		}
 
-		json::Parser::parse(tokens);
+		json::Parser().parse(tokens);
 
 		std::cout << json::Object()
 				("Test String", "string")
@@ -1489,9 +1497,9 @@ int main() {
         Ptr<WebServer> ws((new WebServer(9001))
             ->setDirectory("static")
             ->addRequest(Request(Request::ALL, "/"            ), new FileHandler("index.html"))
-            ->addRequest(Request(Request::ALL, "/test_json"   ), new JsonHandler("{\"test\": 123}"))
+            ->addRequest(Request(Request::ALL, "/test_json"   ), new JsonHandler(json::Object()("test", 123).stringify())) // "{\"test\": 123}"
             ->addRequest(Request(Request::ALL, "/quit"        ), new FunctionHandler(stopProgramRequest))
-            ->addRequest(Request(Request::ALL, "/update_log"  ), new JsonHandler("{\"log\": \"Log text\"}"))
+            ->addRequest(Request(Request::ALL, "/update_log"  ), new JsonHandler(json::Object()("log", "Text").stringify())) // "{\"log\": \"Log text\"}"
         );
 
         pthread_mutex_lock(&mutex);
