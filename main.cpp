@@ -78,41 +78,6 @@ public :
 
 }
 
-class ServerSocket;
-class Connection;
-class ConnectionListener;
-class WebServer;
-
-typedef std::vector<Connection*> Connections;
-typedef std::map<std::string, std::string> Params;
-typedef std::vector<char> ByteBuffer;
-
-ByteBuffer vxsnprintf(size_t maxlen, const char* format, ...) {
-    std::vector<char> buffer(maxlen);
-    va_list args;
-    va_start(args, format);
-    vsnprintf(buffer.data(), maxlen, format, args);
-    va_end(args);
-    return buffer;
-}
-
-std::string xsnprintf(size_t maxlen, const char* format, ...) {
-    va_list args;
-    va_start(args, format);
-    std::vector<char> buffer = vxsnprintf(maxlen, format, args);
-    va_end(args);
-    return std::string(buffer.data());
-}
-
-std::vector<std::string> splitString(const std::string& string, char delim) {
-    std::stringstream stream(string);
-    std::string token;
-    std::vector<std::string> tokens;
-    while (getline(stream, token, delim))
-        tokens.push_back(token);
-    return tokens;
-}
-
 template <typename K, typename V>
 class CreateMap {
 private:
@@ -135,9 +100,25 @@ public:
 template<typename T>
 class Ptr {
 public:
-    Ptr(T* t = NULL) : t(t) {}
-    ~Ptr() { if (t) delete t; }
+    Ptr(T* t = NULL) :
+			t(t) {
+	}
+	~Ptr()
+	{
+		if (t)
+			delete t;
+	}
+	Ptr(const Ptr& other) {
+		*this = other;
+	}
+	Ptr& operator=(const Ptr& other) {
+		if (this != &other) {
+			std::swap(t, const_cast<Ptr&>(other).t);
+		}
+		return *this;
+	}
 	T* operator->() { return t ? t : throw std::runtime_error("pointer is null"); }
+	operator T*() { return t; }
 private:
 	T* t;
 };
@@ -172,6 +153,41 @@ public:
 private:
 	T* t;
 };
+
+class ServerSocket;
+class Connection;
+class ConnectionListener;
+class WebServer;
+
+typedef std::vector<Ptr<Connection>, dws::clean_allocator<Ptr<Connection> > > Connections;
+typedef std::map<std::string, std::string> Params;
+typedef std::vector<char> ByteBuffer;
+
+ByteBuffer vxsnprintf(size_t maxlen, const char* format, ...) {
+	std::vector<char> buffer(maxlen);
+	va_list args;
+	va_start(args, format);
+	vsnprintf(buffer.data(), maxlen, format, args);
+	va_end(args);
+	return buffer;
+}
+
+std::string xsnprintf(size_t maxlen, const char* format, ...) {
+	va_list args;
+	va_start(args, format);
+	std::vector<char> buffer = vxsnprintf(maxlen, format, args);
+	va_end(args);
+	return std::string(buffer.data());
+}
+
+std::vector<std::string> splitString(const std::string& string, char delim) {
+	std::stringstream stream(string);
+	std::string token;
+	std::vector<std::string> tokens;
+	while (getline(stream, token, delim))
+		tokens.push_back(token);
+	return tokens;
+}
 
 namespace json {
 
@@ -363,6 +379,8 @@ struct Parser {
 		ActionState(Action action, int state) : action(action), state(state){}
 	};
 
+	typedef std::vector<std::vector<ActionState> > States;
+
 	typedef std::vector<int> Items;
 	typedef std::vector<Items> Variants;
 	typedef std::map<NonTerminals, Variants> Rules;
@@ -372,6 +390,9 @@ struct Parser {
 	typedef CreateVector<int> CreateVariant;
 
 	static Rules jsonGrammarRules;
+
+	States actionTable;
+	int gotoTable;
 
 	void buildActionAndGotoTables() {
 	}
@@ -828,11 +849,9 @@ public:
 
     void remoteConnection(Connection* connection) {
         Connections::iterator connectionIt = std::find(connections.begin(), connections.end(), connection);
-        if (connectionIt != connections.end()) {
-            io->removeHandlers((*connectionIt)->fd);
-            delete (*connectionIt);
-            connections.erase(connectionIt);
-        }
+		dws_assert(connectionIt != connections.end(), "can't find connection");
+		io->removeHandlers((*connectionIt)->fd);
+		connections.erase(connectionIt);
     }
 
     Io* io;
@@ -1468,18 +1487,17 @@ int main() {
 
 		std::cout << json::Object()
 				("Test String", "string")
-				("Test object",
-					json::Object()
-							("Foo", 32)
-							("Bar", json::Array()
-									(564)
-									("Test")
-							)
-							("Quuz", json::Array()
-									(42)
-									(false)
-							)
-					)
+				("Test object", json::Object()
+						("Foo", 32)
+						("Bar", json::Array()
+								(564)
+								("Test")
+						)
+						("Quuz", json::Array()
+								(42)
+								(false)
+						)
+				)
 				("Test Integer", 42)
 				("Test Float", 3.1415)
 				("Test Bool", false) << std::endl;
@@ -1497,9 +1515,9 @@ int main() {
         Ptr<WebServer> ws((new WebServer(9001))
             ->setDirectory("static")
             ->addRequest(Request(Request::ALL, "/"            ), new FileHandler("index.html"))
-            ->addRequest(Request(Request::ALL, "/test_json"   ), new JsonHandler(json::Object()("test", 123).stringify())) // "{\"test\": 123}"
+            ->addRequest(Request(Request::ALL, "/test_json"   ), new JsonHandler(json::Object()("test", 123).stringify()))
             ->addRequest(Request(Request::ALL, "/quit"        ), new FunctionHandler(stopProgramRequest))
-            ->addRequest(Request(Request::ALL, "/update_log"  ), new JsonHandler(json::Object()("log", "Text").stringify())) // "{\"log\": \"Log text\"}"
+            ->addRequest(Request(Request::ALL, "/update_log"  ), new JsonHandler(json::Object()("log", "Text").stringify()))
         );
 
         pthread_mutex_lock(&mutex);
