@@ -268,8 +268,7 @@ struct Token {
 
 	Token(Type type, const std::string& value = std::string()) : type(type), value(value) {}
 
-	friend std::ostream& operator<<(std::ostream& os, const Token& token)
-	{
+	friend std::ostream& operator<<(std::ostream& os, const Token& token) {
 		static std::map<Type, std::string> tokenTypes =
 				CreateMap<Type, std::string>
 						(ObjectStart, "{")
@@ -289,6 +288,8 @@ struct Token {
 
 	static Tokens tokenize(const std::string& string) {
 		Tokens tokens;
+		int row = 0;
+		int column = 0;
 		for (std::string::const_iterator ch = string.begin(); ch != string.end(); ++ch) {
 			if (*ch == '{') {
 				tokens.push_back(Token(Token::ObjectStart));
@@ -315,10 +316,12 @@ struct Token {
 				do {
 					isInteger = any_of(integer_, *ch);
 					isFloat = any_of(float_, *ch);
-					if (isFloat)
-						type = Token::Float;
 					if (isInteger || isFloat)
 						token.push_back(*ch++);
+					if (isInteger)
+						continue;
+					if (isFloat)
+						type = Token::Float;
 				} while (isInteger || isFloat);
 				tokens.push_back(Token(type, token));
 				ch--;
@@ -329,7 +332,11 @@ struct Token {
 					token.push_back(*ch++);
 				tokens.push_back(Token(Token::Bool, isTrue(token) ? "true" : isFalse(token) ? "false" : throw std::runtime_error("something wrong, not true and not false")));
 				ch--;
-			} else if(*ch == ' ' || *ch == '\n' || *ch == '\t') {
+			} else if(*ch == ' ' || *ch == '\t') {
+				column++;
+			} else if(*ch == '\n') {
+				column = 0;
+				row++;
 			} else throw std::runtime_error(xsnprintf(64, "invalid symbol %d", static_cast<int>(*ch)));
 		}
 		return tokens;
@@ -337,6 +344,7 @@ struct Token {
 
 	Type type;
 	std::string value;
+	int startLine, endLine, startSymbol, endSymbol;
 };
 
 /**
@@ -354,7 +362,6 @@ struct Token {
 struct Parser {
 	enum NonTerminals {
 		Json = 100,
-		Empty,
 		Object,
 		Array,
 		Records,
@@ -731,22 +738,18 @@ public:
 
     Io* addHandlers(int fd, IoHandler* readHandler, IoHandler* writeHandler) {
         if (readHandler)
-            _readHandlers.insert(std::make_pair(fd, readHandler));
+            dws_assert(_readHandlers.insert(std::make_pair(fd, readHandler)).second, "can't insert handler");
         if (writeHandler)
-            _writeHandlers.insert(std::make_pair(fd, writeHandler));
+            dws_assert(_writeHandlers.insert(std::make_pair(fd, writeHandler)).second, "can't insert handler");
         return this;
     }
 
     Io* removeHandlers(int fd) {
-        HandlersMap::iterator readHandlerIt = _readHandlers.find(fd);
-        if (readHandlerIt != _readHandlers.end()) {
-            _readHandlers.erase(readHandlerIt);
-        }
-        HandlersMap::iterator writeHandlerIt = _writeHandlers.find(fd);
-        if (writeHandlerIt != _writeHandlers.end()) {
-            _writeHandlers.erase(writeHandlerIt);
-        }
-        return this;
+		HandlersMap::iterator readHandlerIt = _readHandlers.find(fd);
+		if (readHandlerIt != _readHandlers.end()) _readHandlers.erase(readHandlerIt);
+		HandlersMap::iterator writeHandlerIt = _writeHandlers.find(fd);
+		if (writeHandlerIt != _writeHandlers.end()) _writeHandlers.erase(writeHandlerIt);
+		return this;
     }
 
 private:
